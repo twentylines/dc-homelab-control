@@ -51,6 +51,62 @@ claimed as supported in this release. This limitation is deliberate: a small,
 well-tested surface is safer to publish than a long list of speculative
 adapters.
 
+## From Minecraft scope to a safe test and release
+
+The Minecraft section above describes the support boundary. The workflow below
+is the complete path from a fresh homelab to a tested public release:
+
+1. **Choose the backend and identity.** Set `MINECRAFT_BACKEND` to `auto`,
+   `crafty`, `pterodactyl`, `pelican`, `docker` or `none`. Configure only the
+   provider that exists on the host. Set `BOT_NAME`, `SERVER_NAME`, guild IDs
+   and whitelist IDs for the installation; the product does not assume the
+   names “Acheron” or “Hades”.
+2. **Keep credentials local.** Put Discord, control-plane, media, network and
+   Minecraft credentials in private Runtipi fields, a private `config.env`, or
+   a secret manager. Use read-only upstream tokens where possible. Never put a
+   real token, API key, webhook URL, private key, production endpoint or real
+   host address in GitHub, an issue, a screenshot or a Discord message.
+3. **Start in read-only mode.** Run the compose/Runtipi install with
+   `SERVICE_CONTROL_MODE=opt-in`. The agent discovers Docker containers and
+   configured providers; the bot renders only what is actually present and
+   labels a requested media or network profile **Incomplete** when named
+   components are missing.
+4. **Verify the useful paths.** In a private test guild, exercise `/panel`,
+   `/services`, `/tasks`, `/health`, `/media`, `/network`, `/minecraft` and
+   `/updates`. Check that guests can read status and use `/wake`, while only
+   administrators can enable a service control or maintenance action. Confirm
+   that absent integrations stay hidden and that failed upstream calls are
+   reported as failures rather than successes.
+5. **Enable only reviewed controls.** If lifecycle controls are needed, enable
+   individual containers after reviewing the detected list. Control-plane
+   containers remain protected. For Crafty/Pterodactyl/Pelican, test one server
+   at a time and verify the returned state, resource sample and measured
+   response latency after every action.
+6. **Test the maintenance path separately.** The optional root-owned bridge is
+   the only part allowed to update the bot/agent images. `/updates` checks the
+   configured GitHub repository and checksum; an administrator confirms the
+   action; the bridge backs up the current pair, stages the exact release,
+   rebuilds only `agent` and `bot`, waits for Docker and application health,
+   reports the measured latency, and keeps the previous pair for **Revert bot**.
+   Ubuntu package updates and host reboots are separate, explicitly confirmed
+   operations and are never triggered by a container update.
+7. **Publish only what was tested.** Run the offline Python and Node test
+   suites, review the support matrix, inspect the staged file list and perform
+   a secret scan. Commit to the intended repository, create a version tag such
+   as `v0.3.19`, and let `.github/workflows/release.yml` create the source
+   archive, `SHA256SUMS`, GitHub release and versioned `amd64`/`arm64` GHCR
+   images. Make the GHCR packages public before another host installs the
+   Runtipi definition. Do not advertise an untested dashboard as supported.
+8. **Install and support it.** Point the Runtipi app at the exact published
+   image/tag, complete the local configuration, and repeat the private-guild
+   checks on that host. If a release fails health verification, use the retained
+   rollback; report the provider, architecture, release and relevant redacted
+   logs when opening an issue.
+
+Testers are welcome. Please report what host architecture, integrations and
+commands you tested, but never include tokens, API keys, webhook URLs, private
+keys or unredacted logs.
+
 ## Quick start with Docker Compose
 
 1. Install Docker Engine/Desktop with the Compose plugin.
@@ -161,15 +217,40 @@ Discord credentials, a live Minecraft panel or a running homelab.
 
 ## Publishing to GitHub
 
-Create an empty public repository and copy this directory into it. Add a short
-release note describing the tested support matrix; do not imply that an
-untested dashboard is supported. Push the repository and enable the included
-CI workflow before submitting the `app/` payload to a Runtipi app store.
+This section is for a maintainer publishing a new public release; it is not a
+command to paste into Discord or to run on an existing homelab. The `app/`
+directory is the Runtipi app definition, while the workflow is GitHub Actions
+automation. A normal publication is:
 
-The included `.github/workflows/release.yml` packages each `v*` tag as a source
-archive, publishes `SHA256SUMS`, creates the GitHub release that the bot
-checks, and publishes versioned `amd64`/`arm64` images to GHCR. Make the GHCR
-packages public before using the Runtipi app definition on another host.
+1. Push the reviewed source to the intended public repository and enable the
+   included CI workflow.
+2. Add a release note that names only the tested support matrix. Do not imply
+   that an untested dashboard or provider is supported.
+3. Create a `v*` tag after the tests and secret scan pass. The workflow packages
+   the source, writes `SHA256SUMS`, creates the GitHub release checked by
+   `/updates`, and publishes versioned `amd64`/`arm64` images to GHCR.
+4. Make the GHCR packages public before using the Runtipi `app/` definition on
+   another host, then point that definition at the exact image tag.
+
+In plain language: `app/` is the Runtipi install recipe; the workflow at
+`.github/workflows/release.yml` is the automated publisher; `SHA256SUMS` is the
+integrity manifest used to reject a tampered download; and GHCR is the registry
+that serves the versioned container images. End users do not need to create a
+repository or run this publication flow unless they are maintaining their own
+fork.
 
 The project is MIT licensed. A public release should still include a privacy
-notice for Discord IDs, API endpoints and any optional webhook destination.
+notice for Discord IDs, configured API endpoints and any optional webhook
+destination. Those values belong to the operator's private configuration, not
+to the repository or release assets.
+
+## Public-repository safety check
+
+The tracked project contains configuration names, placeholders and offline test
+fixtures only. Before every push, confirm that the change does not add a real
+Discord token, control token, upstream API key, webhook URL, SSH private key,
+production endpoint, host address, runtime database or log. Keep `config.env`,
+`.env*`, Runtipi app-data and maintenance files outside the repository; the
+example file is intentionally safe to publish. The GitHub Actions token is an
+ephemeral workflow permission supplied by GitHub, not a personal token to copy
+into the project.
