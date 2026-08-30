@@ -239,10 +239,14 @@ that serves the versioned container images. End users do not need to create a
 repository or run this publication flow unless they are maintaining their own
 fork.
 
-The project is MIT licensed. A public release should still include a privacy
-notice for Discord IDs, configured API endpoints and any optional webhook
-destination. Those values belong to the operator's private configuration, not
-to the repository or release assets.
+The project code is licensed under the GNU Affero General Public License,
+version 3 or any later version (`AGPL-3.0-or-later`) from the relicensing
+commit onward. The historical `v0.3.18` release was published under MIT and
+remains under that licence; the AGPL applies to the next release and future
+versions. A public release should still include a privacy notice for Discord
+IDs, configured API endpoints and any optional webhook destination. Those
+values belong to the operator's private configuration, not to the repository
+or release assets. See [`LICENSE`](LICENSE) for the complete licence text.
 
 ## Public-repository safety check
 

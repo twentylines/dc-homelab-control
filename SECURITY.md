@@ -5,6 +5,11 @@ network. Keep the Discord application restricted to the configured guilds and
 whitelists, and keep the Runtipi app unexposed unless there is a deliberate
 reverse-proxy and authentication plan.
 
+The project code is licensed under `AGPL-3.0-or-later`. Modified versions that
+are offered as a network service must provide remote users a way to obtain the
+corresponding source, as described by the licence. Keep the source link and
+version information available in any public deployment.
+
 The bot has no Docker socket. The agent has the socket because Docker lifecycle
 actions require it, but it accepts only dedicated HTTP routes, validates
 identifiers, refuses control-plane containers, records mutations, drops Linux

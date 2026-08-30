@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.19 - 2026-08-31
+
+- relicensed the project code under GNU AGPLv3-or-later; the historical
+  `v0.3.18` release remains MIT-licensed and is not retroactively changed;
+- added public-source and remote-network licence guidance to the security and
+  publishing documentation.
+
 ## 0.3.18 - 2026-08-30
 
 - added a GitHub stable-release check to `/updates` with an honest unavailable
