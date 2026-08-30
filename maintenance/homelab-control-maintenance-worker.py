@@ -1,0 +1,750 @@
+#!/usr/bin/env python3
+"""Small, local-only host bridge for guarded Ubuntu maintenance.
+
+The Discord bot never receives host root access.  The controller writes one
+allowlisted request into the maintenance directory; this root-owned service
+consumes it, runs only the two maintenance actions below, and writes a
+sanitised status snapshot back for the controller to read.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import hashlib
+import shutil
+import tarfile
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+import subprocess
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+MAINTENANCE_DIR = Path(os.getenv("HOMELAB_CONTROL_MAINTENANCE_DIR", "/var/lib/homelab-control/maintenance"))
+STATUS_FILE = MAINTENANCE_DIR / "status.json"
+REQUEST_FILE = MAINTENANCE_DIR / "request.json"
+BOT_RELEASE_STATUS_FILE = MAINTENANCE_DIR / "bot-release.json"
+BOT_RELEASE_ROOT = Path(os.getenv("HOMELAB_CONTROL_RELEASE_ROOT", str(MAINTENANCE_DIR / "releases")))
+BOT_RELEASE_REPOSITORY = os.getenv("HOMELAB_CONTROL_REPOSITORY", "").strip()
+BOT_RELEASE_COMPOSE_FILE = Path(os.getenv("HOMELAB_CONTROL_COMPOSE_FILE", "")).expanduser() if os.getenv("HOMELAB_CONTROL_COMPOSE_FILE", "").strip() else None
+BOT_RELEASE_ENV_FILE = Path(os.getenv("HOMELAB_CONTROL_ENV_FILE", "")).expanduser() if os.getenv("HOMELAB_CONTROL_ENV_FILE", "").strip() else None
+BOT_RELEASE_COMPOSE_PROJECT = os.getenv("HOMELAB_CONTROL_COMPOSE_PROJECT", "").strip()
+BOT_RELEASE_MAX_ARCHIVE_BYTES = 250 * 1024 * 1024
+BOT_RELEASE_TIMEOUT_SECONDS = 1800
+BOT_RELEASE_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100}$")
+BOT_RELEASE_VERSION_RE = re.compile(r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$")
+BOT_RELEASE_DIGEST_RE = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
+UPDATE_NOTIFIER_FILE = Path("/var/lib/update-notifier/updates-available")
+REBOOT_MARKER = Path("/var/run/reboot-required")
+BOOT_ID_FILE = Path("/proc/sys/kernel/random/boot_id")
+POLL_SECONDS = 2.0
+STATUS_INTERVAL_SECONDS = 300.0
+COMMAND_TIMEOUT_SECONDS = 1800
+
+
+def timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def boot_id() -> str:
+    try:
+        return BOOT_ID_FILE.read_text(encoding="utf-8").strip()[:120]
+    except OSError:
+        return "unknown"
+
+
+def clean_line(value: str, maximum: int = 220) -> str:
+    value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(value or ""))
+    value = re.sub(r"https://discord\.com/api/webhooks/[^\s]+", "[WEBHOOK REDACTED]", value, flags=re.I)
+    value = re.sub(r"(?i)(password|token|secret|api[_-]?key)\s*[=:]\s*[^\s]+", r"\1=[REDACTED]", value)
+    return " ".join(value.split())[:maximum]
+
+
+def read_json(path: Path):
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_json(path: Path, value: dict):
+    MAINTENANCE_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+    os.chmod(temporary, 0o644 if path == STATUS_FILE else 0o600)
+    os.replace(temporary, path)
+
+
+def notifier_summary():
+    try:
+        text = UPDATE_NOTIFIER_FILE.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"available": False, "detail": "Ubuntu update-notifier data is unavailable"}
+    pending = None
+    security = None
+    match = re.search(r"(\d+)\s+updates? can be applied", text, re.I)
+    if match:
+        pending = int(match.group(1))
+    match = re.search(r"(\d+)\s+of these updates? are standard security updates", text, re.I)
+    if match:
+        security = int(match.group(1))
+    esm_disabled = "expanded security maintenance for applications is not enabled" in text.lower()
+    return {
+        "available": True,
+        "pending_count": pending,
+        "security_count": security,
+        "esm_enabled": not esm_disabled,
+        "notice": "ESM Apps is not enabled" if esm_disabled else None,
+    }
+
+
+def security_origin(origin: str) -> bool:
+    """Return whether an apt origin is an Ubuntu security repository."""
+    value = str(origin or "").lower()
+    return any(marker in value for marker in ("noble-security", "security.ubuntu.com", "esm.ubuntu.com"))
+
+
+def simulated_update_details():
+    """Read the package manager's planned upgrades without changing state."""
+    try:
+        result = subprocess.run(
+            ["/usr/bin/apt-get", "-s", "upgrade"],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+            env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {"packages": [], "deferred_packages": []}
+    packages = []
+    deferred_packages = []
+    reading_deferred = False
+    for line in result.stdout.splitlines():
+        if line.startswith("The following upgrades have been deferred due to phasing:"):
+            reading_deferred = True
+            continue
+        if reading_deferred:
+            if line.startswith("  "):
+                deferred_packages.extend(line.split())
+                continue
+            reading_deferred = False
+        match = re.match(r"^Inst\s+(\S+)(?:\s+\[[^\]]+\])?\s+\((\S+)(?:\s+([^)]+))?\)", line)
+        if not match:
+            continue
+        origin = clean_line(match.group(3) or "", 120)
+        origin = re.sub(r"\s+\[[^\]]+\]$", "", origin)
+        packages.append({
+            "name": clean_line(match.group(1), 100),
+            "latest": clean_line(match.group(2), 120),
+            "origin": origin,
+            "security": security_origin(origin),
+        })
+    return {
+        "packages": packages[:100],
+        "deferred_packages": [clean_line(name, 100) for name in deferred_packages[:100]],
+    }
+
+
+def simulated_updates():
+    """Backward-compatible list of the simulated upgrade packages."""
+    return simulated_update_details()["packages"]
+
+
+def host_update_snapshot():
+    notifier = notifier_summary()
+    simulated = simulated_update_details()
+    packages = simulated["packages"]
+    deferred_packages = simulated["deferred_packages"]
+    if not notifier.get("available") and not packages:
+        return {"available": False, "detail": notifier.get("detail", "Ubuntu update status unavailable")}
+    pending = len(packages) if packages else notifier.get("pending_count")
+    security_packages = [package["name"] for package in packages if package.get("security")]
+    notifier_security = notifier.get("security_count")
+    security_count = len(security_packages) if packages else notifier_security
+    # The notifier can include security updates that apt has deferred due to
+    # phasing, so retain an explicit notifier count when it is higher.
+    if notifier_security is not None and security_count is not None:
+        security_count = max(security_count, notifier_security)
+    if security_count is None:
+        security_detail = "Security classification unavailable from the current package metadata"
+    elif security_count == 0:
+        security_detail = "No Ubuntu security updates in the current upgrade plan"
+    elif security_packages:
+        security_detail = "Security packages are marked with a lock icon below"
+    else:
+        security_detail = "Ubuntu reports security updates, but apt is currently deferring their package plan"
+    result = {
+        "available": True,
+        "checked_at": timestamp(),
+        "pending_count": pending,
+        "security_count": security_count,
+        "security_detail": security_detail,
+        "security_packages": security_packages[:100],
+        "standard_packages": [package["name"] for package in packages if not package.get("security")][:100],
+        "deferred_packages": deferred_packages,
+        "deferred_count": len(deferred_packages),
+        "esm_enabled": notifier.get("esm_enabled"),
+        "notice": notifier.get("notice"),
+        "packages": packages,
+    }
+    return result
+
+
+def append_event(status: dict, message: str):
+    events = status.setdefault("events", [])
+    events.append({"at": timestamp(), "message": clean_line(message)})
+    status["events"] = events[-12:]
+
+
+def save_status(status: dict):
+    status["updated_at"] = timestamp()
+    write_json(STATUS_FILE, status)
+
+
+def bot_update_supported() -> bool:
+    return bool(
+        BOT_RELEASE_REPOSITORY_RE.fullmatch(BOT_RELEASE_REPOSITORY)
+        and BOT_RELEASE_COMPOSE_FILE
+        and BOT_RELEASE_COMPOSE_FILE.is_file()
+        and Path(docker_binary()).is_file()
+    )
+
+
+def write_bot_status(status: dict):
+    status["updated_at"] = timestamp()
+    write_json(BOT_RELEASE_STATUS_FILE, status)
+
+
+def read_bot_status():
+    return read_json(BOT_RELEASE_STATUS_FILE)
+
+
+def base_bot_status(existing=None):
+    status = dict(existing or {})
+    status.setdefault("schema", 1)
+    status.setdefault("phase", "idle")
+    status.setdefault("job_id", None)
+    status.setdefault("events", [])
+    status.setdefault("rollback_available", False)
+    status.setdefault("update_supported", bot_update_supported())
+    return status
+
+
+def append_bot_event(status: dict, message: str):
+    events = status.setdefault("events", [])
+    events.append({"at": timestamp(), "message": clean_line(message)})
+    status["events"] = events[-12:]
+
+
+def bot_version(value: str):
+    match = BOT_RELEASE_VERSION_RE.fullmatch(str(value or "").strip())
+    if not match:
+        return None
+    return str(value).strip().lstrip("v")
+
+
+def docker_binary():
+    return shutil.which("docker") or "/usr/bin/docker"
+
+
+def compose_base_command():
+    if not bot_update_supported():
+        raise RuntimeError("The bot release bridge has no valid Compose deployment target")
+    command = [docker_binary(), "compose"]
+    if BOT_RELEASE_ENV_FILE:
+        if not BOT_RELEASE_ENV_FILE.is_file():
+            raise RuntimeError("The configured Compose environment file does not exist")
+        command.extend(["--env-file", str(BOT_RELEASE_ENV_FILE)])
+    if BOT_RELEASE_COMPOSE_PROJECT:
+        command.extend(["-p", BOT_RELEASE_COMPOSE_PROJECT])
+    command.extend(["-f", str(BOT_RELEASE_COMPOSE_FILE)])
+    return command
+
+
+def compose_service_image(service: str):
+    command = compose_base_command() + ["ps", "-q", service]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+    container_id = result.stdout.strip().splitlines()[0] if result.returncode == 0 and result.stdout.strip() else ""
+    if not container_id:
+        return None
+    inspect = subprocess.run(
+        [docker_binary(), "inspect", container_id, "--format", "{{.Config.Image}}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    image = inspect.stdout.strip()
+    return image or None
+
+
+def compose_override(path: Path, contexts=None, images=None):
+    contexts = contexts or {}
+    images = images or {}
+
+    def quote(value):
+        return json.dumps(str(value))
+
+    lines = ["services:"]
+    for service in ("agent", "bot"):
+        lines.extend([f"  {service}:"])
+        if service in contexts:
+            lines.extend(["    build:", f"      context: {quote(contexts[service])}"])
+        else:
+            lines.append("    build: null")
+        lines.extend([
+            f"    image: {quote(images[service])}",
+            "    pull_policy: never",
+        ])
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+
+
+def wait_control_health(status: dict, timeout: float = 150.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        healthy = True
+        details = []
+        for service in ("agent", "bot"):
+            try:
+                image = compose_service_image(service)
+                if not image:
+                    healthy = False
+                    details.append(f"{service}: container not found")
+                    continue
+                command = compose_base_command() + ["ps", "-q", service]
+                result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+                container_id = result.stdout.strip().splitlines()[0] if result.returncode == 0 and result.stdout.strip() else ""
+                inspect = subprocess.run(
+                    [docker_binary(), "inspect", container_id, "--format", "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+                state, health = (inspect.stdout.strip().split("|", 1) + ["unknown"])[:2]
+                if state != "running" or health not in {"healthy", "none"}:
+                    healthy = False
+                    details.append(f"{service}: {state or 'unknown'} / {health or 'unknown'}")
+                else:
+                    details.append(f"{service}: healthy")
+            except (OSError, subprocess.SubprocessError) as exc:
+                healthy = False
+                details.append(f"{service}: {exc.__class__.__name__}")
+        append_bot_event(status, " · ".join(details))
+        write_bot_status(status)
+        if healthy:
+            return True
+        time.sleep(3)
+    return False
+
+
+def validated_release_request(request: dict):
+    repository = str(request.get("repository") or "").strip()
+    tag = str(request.get("tag") or "").strip()
+    version = bot_version(str(request.get("version") or ""))
+    asset_name = str(request.get("asset_name") or "").strip()
+    asset_url = str(request.get("asset_url") or "").strip()
+    digest = str(request.get("asset_digest") or "").strip().lower()
+    if repository != BOT_RELEASE_REPOSITORY or not BOT_RELEASE_REPOSITORY_RE.fullmatch(repository):
+        raise RuntimeError("The release repository does not match the configured repository")
+    if not tag or bot_version(tag) != version:
+        raise RuntimeError("The release tag is not a valid semantic version")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,160}\.(?:tar\.gz|tgz)", asset_name, re.I):
+        raise RuntimeError("The release archive name is not allowed")
+    parsed = urllib.parse.urlparse(asset_url)
+    expected_path = f"/{repository}/releases/download/{tag}/{asset_name}"
+    if parsed.scheme != "https" or parsed.netloc.lower() != "github.com" or parsed.path != expected_path or parsed.query or parsed.fragment:
+        raise RuntimeError("The release archive URL is not an exact GitHub release asset URL")
+    if not BOT_RELEASE_DIGEST_RE.fullmatch(digest):
+        raise RuntimeError("The release archive has no valid SHA-256 digest")
+    return repository, tag, version, asset_name, asset_url, digest
+
+
+def download_release_archive(status: dict, request: dict, destination: Path, digest: str):
+    append_bot_event(status, "Downloading the verified GitHub release archive")
+    write_bot_status(status)
+    http_request = urllib.request.Request(
+        request["asset_url"],
+        headers={"Accept": "application/octet-stream", "User-Agent": "Homelab-Control-release-bridge"},
+    )
+    try:
+        with urllib.request.urlopen(http_request, timeout=60) as response, destination.open("wb") as output:
+            hasher = hashlib.sha256()
+            total = 0
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > BOT_RELEASE_MAX_ARCHIVE_BYTES:
+                    raise RuntimeError("The release archive exceeds the safety size limit")
+                hasher.update(chunk)
+                output.write(chunk)
+    except (OSError, urllib.error.URLError) as exc:
+        raise RuntimeError(f"Could not download the GitHub release archive ({exc.__class__.__name__})") from exc
+    actual = f"sha256:{hasher.hexdigest()}"
+    if actual.lower() != digest.lower():
+        raise RuntimeError("The downloaded archive failed its SHA-256 verification")
+    append_bot_event(status, "SHA-256 verification passed")
+    write_bot_status(status)
+
+
+def safe_extract_release(archive: Path, destination: Path):
+    destination.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive, "r:*") as tar:
+        members = tar.getmembers()
+        if len(members) > 10_000:
+            raise RuntimeError("The release archive contains too many entries")
+        for member in members:
+            name = Path(member.name)
+            if name.is_absolute() or ".." in name.parts or member.issym() or member.islnk() or not (member.isdir() or member.isfile()):
+                raise RuntimeError("The release archive contains an unsafe path or entry")
+        tar.extractall(destination, members=members)
+    roots = [destination]
+    children = [item for item in destination.iterdir() if item.is_dir()]
+    if len(children) == 1 and (children[0] / "agent").is_dir() and (children[0] / "bot").is_dir():
+        roots = [children[0]]
+    source = roots[0]
+    for required in (source / "agent" / "Dockerfile", source / "agent" / "agent.py", source / "bot" / "Dockerfile", source / "bot" / "package.json", source / "bot" / "package-lock.json"):
+        if not required.is_file():
+            raise RuntimeError(f"The release archive is missing {required.relative_to(source)}")
+    return source
+
+
+def release_snapshot():
+    return {
+        "agent_image": compose_service_image("agent"),
+        "bot_image": compose_service_image("bot"),
+    }
+
+
+def snapshot_version(snapshot):
+    images = [snapshot.get("bot_image"), snapshot.get("agent_image")]
+    for image in images:
+        match = re.search(r":(v?(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?)$", str(image or ""))
+        if match:
+            return bot_version(match.group(1))
+    return "previous release"
+
+
+def restore_release(status: dict, snapshot: dict):
+    if not snapshot.get("agent_image") or not snapshot.get("bot_image"):
+        return False
+    override = BOT_RELEASE_ROOT / f"rollback-{status.get('job_id') or 'current'}.yml"
+    try:
+        override.parent.mkdir(parents=True, exist_ok=True)
+        compose_override(override, images={"agent": snapshot["agent_image"], "bot": snapshot["bot_image"]})
+        append_bot_event(status, "Restoring the previous control images")
+        write_bot_status(status)
+        command = compose_base_command() + ["-f", str(override), "up", "-d", "--no-deps", "agent", "bot"]
+        if not run_command(status, command, "Switching back to the previous control release"):
+            return False
+        return wait_control_health(status)
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return False
+    finally:
+        try:
+            override.unlink()
+        except OSError:
+            pass
+
+
+def run_bot_update(request: dict):
+    status = base_bot_status(read_bot_status())
+    status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "detail": None, "events": [], "update_supported": bot_update_supported()})
+    write_bot_status(status)
+    snapshot = None
+    try:
+        validated = validated_release_request(request)
+        _repository, _tag, version, asset_name, _asset_url, digest = validated
+        snapshot = release_snapshot()
+        if not snapshot.get("agent_image") or not snapshot.get("bot_image"):
+            raise RuntimeError("The control containers are not both running; update was not attempted")
+        status.update({"phase": "downloading", "requested_version": version, "asset_name": asset_name})
+        write_bot_status(status)
+        BOT_RELEASE_ROOT.mkdir(parents=True, exist_ok=True)
+        os.chmod(BOT_RELEASE_ROOT, 0o700)
+        with tempfile.TemporaryDirectory(prefix="homelab-control-release-", dir=str(BOT_RELEASE_ROOT)) as temporary:
+            temporary_path = Path(temporary)
+            archive = temporary_path / asset_name
+            download_release_archive(status, request, archive, digest)
+            status["phase"] = "verifying"
+            append_bot_event(status, "Checking the archive layout and required control files")
+            write_bot_status(status)
+            extracted = temporary_path / "source"
+            source = safe_extract_release(archive, extracted)
+            staged = BOT_RELEASE_ROOT / version
+            if staged.exists():
+                shutil.rmtree(staged)
+            shutil.move(str(source), str(staged))
+        status["phase"] = "staging"
+        append_bot_event(status, f"Release {version} staged")
+        write_bot_status(status)
+        override = BOT_RELEASE_ROOT / f"update-{status.get('job_id') or version}.yml"
+        compose_override(override, contexts={"agent": staged / "agent", "bot": staged / "bot"}, images={"agent": f"local/homelab-control-agent:{version}", "bot": f"local/homelab-control-bot:{version}"})
+        try:
+            status["phase"] = "building"
+            append_bot_event(status, "Validating the Compose merge before building")
+            write_bot_status(status)
+            config_check = compose_base_command() + ["-f", str(override), "config", "--quiet"]
+            if not run_command(status, config_check, "Checking the release Compose definition"):
+                raise RuntimeError("The release Compose definition failed validation")
+            if not run_command(status, compose_base_command() + ["-f", str(override), "build", "agent", "bot"], "Building the new control images"):
+                raise RuntimeError("The control image build failed; the previous release was kept")
+            status["phase"] = "restarting"
+            append_bot_event(status, "Recreating only the control agent and Discord bot")
+            write_bot_status(status)
+            if not run_command(status, compose_base_command() + ["-f", str(override), "up", "-d", "--no-deps", "agent", "bot"], "Starting the new control containers"):
+                raise RuntimeError("The control containers could not be started")
+            status["phase"] = "verifying_runtime"
+            append_bot_event(status, "Waiting for agent and bot health checks")
+            write_bot_status(status)
+            if not wait_control_health(status):
+                raise RuntimeError("The new control containers did not become healthy")
+        except Exception:
+            status["phase"] = "failed"
+            if snapshot and restore_release(status, snapshot):
+                status["detail"] = "The new release failed verification; the previous control release was restored"
+                status["current_version"] = snapshot_version(snapshot)
+                status["rollback_available"] = bool(read_bot_status().get("rollback_available"))
+            else:
+                status["detail"] = "The new release failed and automatic restoration could not be verified"
+            write_bot_status(status)
+            return
+        status.update({
+            "phase": "complete",
+            "current_version": version,
+            "previous_version": snapshot_version(snapshot),
+            "rollback_images": snapshot,
+            "rollback_available": True,
+            "completed_at": timestamp(),
+            "detail": f"Release {version} is running and both control health checks passed",
+        })
+        append_bot_event(status, "Bot release applied and verified")
+        write_bot_status(status)
+    except Exception as exc:
+        status["phase"] = "failed"
+        status["detail"] = clean_line(str(exc), 240)
+        append_bot_event(status, "Bot release was refused before changing containers")
+        write_bot_status(status)
+
+
+def run_bot_rollback(request: dict):
+    status = base_bot_status(read_bot_status())
+    status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "detail": None, "events": [], "update_supported": bot_update_supported()})
+    write_bot_status(status)
+    try:
+        snapshot = status.get("rollback_images")
+        if not status.get("rollback_available") or not isinstance(snapshot, dict):
+            raise RuntimeError("No previous control images are available")
+        current = release_snapshot()
+        target_version = snapshot_version(snapshot)
+        status["phase"] = "restarting"
+        append_bot_event(status, f"Restoring control release {target_version}")
+        write_bot_status(status)
+        if not restore_release(status, snapshot):
+            raise RuntimeError("The previous control release did not pass its health checks")
+        status.update({
+            "phase": "rolled_back",
+            "current_version": target_version,
+            "previous_version": snapshot_version(current),
+            "rollback_images": current,
+            "rollback_available": bool(current.get("agent_image") and current.get("bot_image")),
+            "completed_at": timestamp(),
+            "detail": f"Release {target_version} is running and both control health checks passed",
+        })
+        append_bot_event(status, "Previous bot release restored and verified")
+        write_bot_status(status)
+    except Exception as exc:
+        status["phase"] = "failed"
+        status["detail"] = clean_line(str(exc), 240)
+        append_bot_event(status, "Rollback was refused or could not be verified")
+        write_bot_status(status)
+
+
+def base_status(existing=None):
+    status = dict(existing or {})
+    status.setdefault("schema", 1)
+    status.setdefault("phase", "idle")
+    status.setdefault("job_id", None)
+    status.setdefault("events", [])
+    status.setdefault("boot_id", boot_id())
+    status.setdefault("reboot_required", REBOOT_MARKER.exists())
+    return status
+
+
+def run_command(status: dict, command: list[str], label: str) -> bool:
+    append_event(status, label)
+    save_status(status)
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env={**os.environ, "DEBIAN_FRONTEND": "noninteractive", "NEEDRESTART_MODE": "a"},
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            line = clean_line(line)
+            if line:
+                append_event(status, line)
+                save_status(status)
+        return_code = process.wait(timeout=COMMAND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        append_event(status, "The package manager timed out; no reboot was requested")
+        status["phase"] = "failed"
+        status["detail"] = "Ubuntu package operation timed out"
+        save_status(status)
+        return False
+    except OSError as exc:
+        append_event(status, f"Could not start package manager ({exc.__class__.__name__})")
+        status["phase"] = "failed"
+        status["detail"] = "Ubuntu package manager could not be started"
+        save_status(status)
+        return False
+    if return_code != 0:
+        append_event(status, f"Package manager exited with code {return_code}")
+        status["phase"] = "failed"
+        status["detail"] = f"Ubuntu package operation failed (exit {return_code})"
+        save_status(status)
+        return False
+    return True
+
+
+def apply_updates(request: dict):
+    status = base_status()
+    status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "detail": None, "events": []})
+    append_event(status, "Ubuntu maintenance accepted; no automatic reboot will be performed")
+    save_status(status)
+    if not run_command(status, ["/usr/bin/apt-get", "update"], "Refreshing the Ubuntu package catalogue"):
+        return
+    status["phase"] = "applying"
+    append_event(status, "Applying standard Ubuntu upgrades (configuration files are kept)")
+    save_status(status)
+    if not run_command(
+        status,
+        ["/usr/bin/apt-get", "-y", "-o", "Dpkg::Options::=--force-confold", "upgrade"],
+        "Installing available Ubuntu updates",
+    ):
+        return
+    snapshot = host_update_snapshot()
+    status.update(snapshot)
+    status["reboot_required"] = REBOOT_MARKER.exists()
+    status["phase"] = "ready_for_reboot" if status["reboot_required"] else "complete"
+    status["completed_at"] = timestamp()
+    append_event(status, "Updates applied successfully")
+    if status["reboot_required"]:
+        append_event(status, "Ubuntu reports that a restart is required; waiting for your confirmation")
+    else:
+        append_event(status, "Ubuntu does not currently report a restart requirement")
+    save_status(status)
+
+
+def request_reboot(request: dict):
+    status = base_status(read_json(STATUS_FILE))
+    if not request.get("job_id") or request.get("job_id") != status.get("job_id"):
+        status["phase"] = "failed"
+        status["detail"] = "Restart request did not match the current maintenance job"
+        append_event(status, "Restart refused because the maintenance job did not match")
+        save_status(status)
+        return
+    if status.get("phase") != "ready_for_reboot" or not REBOOT_MARKER.exists():
+        status["phase"] = "failed"
+        status["detail"] = "Ubuntu is not waiting for a confirmed restart"
+        append_event(status, "Restart refused because no confirmed reboot is pending")
+        save_status(status)
+        return
+    status["phase"] = "rebooting"
+    status["reboot_requested_at"] = timestamp()
+    status["boot_id"] = boot_id()
+    append_event(status, "Restart confirmed; the controller will announce when the host is back online")
+    save_status(status)
+    time.sleep(1)
+    try:
+        result = subprocess.run(["/usr/bin/systemctl", "reboot"], check=False, timeout=15)
+        if result.returncode != 0:
+            status["phase"] = "failed"
+            status["detail"] = "systemctl reboot returned a failure"
+            append_event(status, f"The restart command returned code {result.returncode}")
+            save_status(status)
+    except (OSError, subprocess.TimeoutExpired):
+        status["phase"] = "failed"
+        status["detail"] = "systemctl reboot could not be started"
+        append_event(status, "The restart command could not be started")
+        save_status(status)
+
+
+def startup_transition(status: dict):
+    current_boot = boot_id()
+    if status.get("phase") in {"rebooting", "pre_reboot"} and status.get("boot_id") not in {None, current_boot}:
+        status["phase"] = "online"
+        status["online_at"] = timestamp()
+        status["boot_id"] = current_boot
+        status["reboot_required"] = REBOOT_MARKER.exists()
+        append_event(status, "The host is back online after the confirmed restart")
+    elif not status.get("boot_id"):
+        status["boot_id"] = current_boot
+    return status
+
+
+def main():
+    MAINTENANCE_DIR.mkdir(parents=True, exist_ok=True)
+    status = startup_transition(base_status(read_json(STATUS_FILE)))
+    try:
+        status.update(host_update_snapshot())
+    except Exception:
+        pass
+    save_status(status)
+    bot_status = base_bot_status(read_bot_status())
+    bot_status["update_supported"] = bot_update_supported()
+    if bot_status.get("phase") in {"checking", "downloading", "verifying", "staging", "building", "restarting", "verifying_runtime"}:
+        bot_status["phase"] = "failed"
+        bot_status["detail"] = "The maintenance bridge restarted during a bot release action; the action was not resumed"
+        append_bot_event(bot_status, "Bot release action interrupted by bridge restart")
+    write_bot_status(bot_status)
+    last_status_refresh = time.monotonic()
+    while True:
+        request = read_json(REQUEST_FILE)
+        if request:
+            try:
+                REQUEST_FILE.unlink()
+            except OSError:
+                pass
+            action = request.get("action")
+            if action == "apply_updates":
+                apply_updates(request)
+            elif action == "reboot":
+                request_reboot(request)
+            elif action == "bot_update":
+                run_bot_update(request)
+            elif action == "bot_rollback":
+                run_bot_rollback(request)
+            else:
+                status = base_status(read_json(STATUS_FILE))
+                status["phase"] = "failed"
+                status["detail"] = "Unknown maintenance action refused"
+                append_event(status, "Unknown maintenance action refused")
+                save_status(status)
+        if time.monotonic() - last_status_refresh >= STATUS_INTERVAL_SECONDS:
+            status = base_status(read_json(STATUS_FILE))
+            if status.get("phase") in {"idle", "complete", "online"}:
+                status.update(host_update_snapshot())
+                status["reboot_required"] = REBOOT_MARKER.exists()
+                save_status(status)
+            last_status_refresh = time.monotonic()
+        time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    main()

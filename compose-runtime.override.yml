@@ -1,0 +1,16 @@
+# Optional overrides for an existing generated Runtipi compose file.
+# Runtipi owns docker-compose.generated.yml; keep local changes here.
+services:
+  agent:
+    environment:
+      HOST_DMI: /host/sys/firmware/dmi/tables
+      HOST_HOSTNAME_FILE: /host/etc/hostname
+      MAINTENANCE_DIR: /host/maintenance
+      HOST_UPDATE_NOTIFIER_DIR: /host/update-notifier
+      RUNTIPI_ENV_FILE: /run/secrets/runtipi-env
+    volumes:
+      - /sys/firmware/dmi/tables:/host/sys/firmware/dmi/tables:ro
+      - /etc/hostname:/host/etc/hostname:ro
+      - ${HOMELAB_CONTROL_MAINTENANCE_DIR:-/tmp/homelab-control-maintenance}:/host/maintenance:rw
+      - /var/lib/update-notifier:/host/update-notifier:ro
+      - ${ROOT_FOLDER_HOST:-/opt/runtipi}/.env:/run/secrets/runtipi-env:ro

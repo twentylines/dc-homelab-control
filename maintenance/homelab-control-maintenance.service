@@ -1,0 +1,17 @@
+[Unit]
+Description=Homelab Control guarded Ubuntu maintenance bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/homelab-control-maintenance-worker
+EnvironmentFile=-/etc/homelab-control/maintenance.env
+Restart=on-failure
+RestartSec=5
+User=root
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

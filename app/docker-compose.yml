@@ -1,0 +1,164 @@
+x-runtipi:
+  schema_version: 2
+
+services:
+  agent:
+    image: ${HOMELAB_CONTROL_AGENT_IMAGE:-ghcr.io/twentylines/dc-homelab-control-agent:0.3.18}
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+      CONTROL_TOKEN: ${CONTROL_TOKEN}
+      HOST_PROC: /host/proc
+      HOST_HWMON: /host/sys/class/hwmon
+      HOST_DMI: /host/sys/firmware/dmi/tables
+      HOST_HOSTNAME_FILE: /host/etc/hostname
+      HOST_SSD_PATH: /host/app-data
+      HOST_SSD_LABEL: ${HOST_SSD_LABEL:-Application data}
+      HOST_MEDIA_PATH: /host/media
+      HOST_MEDIA_LABEL: ${HOST_MEDIA_LABEL:-Media}
+      HOST_GATEWAY: host.docker.internal
+      AGENT_DATA_DIR: /data
+      RUNTIPI_ENV_FILE: /run/secrets/runtipi-env
+      MAINTENANCE_DIR: /host/maintenance
+      HOST_UPDATE_NOTIFIER_DIR: /host/update-notifier
+      HOMELAB_CONTROL_REPOSITORY: ${HOMELAB_CONTROL_REPOSITORY:-}
+      HOMELAB_CONTROL_VERSION: ${HOMELAB_CONTROL_VERSION:-0.3.18}
+      HOMELAB_CONTROL_RELEASE_CHANNEL: ${HOMELAB_CONTROL_RELEASE_CHANNEL:-stable}
+      HOMELAB_CONTROL_RELEASE_ASSET: ${HOMELAB_CONTROL_RELEASE_ASSET:-}
+      SERVICE_CONTROL_MODE: ${SERVICE_CONTROL_MODE:-opt-in}
+      CONTROL_BOT_NAME: ${BOT_NAME:-Homelab Control}
+      MEDIA_REQUIRED_PROVIDERS: ${MEDIA_REQUIRED_PROVIDERS:-}
+      MEDIA_STACK_PROFILE: ${MEDIA_STACK_PROFILE:-auto}
+      NETWORK_REQUIRED_PROVIDERS: ${NETWORK_REQUIRED_PROVIDERS:-}
+      PIHOLE_BASE_URL: ${PIHOLE_BASE_URL:-}
+      TECHNITIUM_BASE_URL: ${TECHNITIUM_BASE_URL:-}
+      ADGUARD_BASE_URL: ${ADGUARD_BASE_URL:-}
+      JELLYFIN_BASE_URL: ${JELLYFIN_BASE_URL:-}
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:-}
+      JELLYFIN_USER_ID: ${JELLYFIN_USER_ID:-}
+      PLEX_BASE_URL: ${PLEX_BASE_URL:-}
+      PLEX_TOKEN: ${PLEX_TOKEN:-}
+      SCRUTINY_URL: ${SCRUTINY_URL:-}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /proc:/host/proc:ro
+      - /sys/class/hwmon:/host/sys/class/hwmon:ro
+      - /sys/firmware/dmi/tables:/host/sys/firmware/dmi/tables:ro
+      - /etc/hostname:/host/etc/hostname:ro
+      - ${RUNTIPI_APP_DATA_PATH:-/opt/runtipi/app-data}:/host/app-data:ro
+      - ${ROOT_FOLDER_HOST:-/opt/runtipi}/media:/host/media:ro
+      - ${ROOT_FOLDER_HOST:-/opt/runtipi}/.env:/run/secrets/runtipi-env:ro
+      - ${HOMELAB_CONTROL_MAINTENANCE_DIR:-/tmp/homelab-control-maintenance}:/host/maintenance:rw
+      - /var/lib/update-notifier:/host/update-notifier:ro
+      - ${APP_DATA_DIR}/data/agent:/data
+    networks:
+      - tipi_main_network
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=3).read()
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      homelab.control.component: agent
+      homelab.control.managed: "true"
+
+  bot:
+    image: ${HOMELAB_CONTROL_BOT_IMAGE:-ghcr.io/twentylines/dc-homelab-control-bot:0.3.18}
+    restart: unless-stopped
+    depends_on:
+      agent:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-UTC}
+      CONTROL_TOKEN: ${CONTROL_TOKEN}
+      DISCORD_TOKEN: ${DISCORD_TOKEN}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID}
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID}
+      DISCORD_GUILD_IDS: ${DISCORD_GUILD_IDS:-}
+      DISCORD_OWNER_ID: ${DISCORD_OWNER_ID}
+      DISCORD_ADMIN_ROLE_ID: ${DISCORD_ADMIN_ROLE_ID:-}
+      DISCORD_ADMIN_USER_IDS: ${DISCORD_ADMIN_USER_IDS:-}
+      DISCORD_ADMIN_ROLE_IDS: ${DISCORD_ADMIN_ROLE_IDS:-}
+      DISCORD_GUEST_USER_IDS: ${DISCORD_GUEST_USER_IDS:-}
+      DISCORD_GUEST_ROLE_IDS: ${DISCORD_GUEST_ROLE_IDS:-}
+      BOT_NAME: ${BOT_NAME:-Homelab Control}
+      SERVER_NAME: ${SERVER_NAME:-}
+      TIME_ZONE: ${TIME_ZONE:-UTC}
+      SERVICE_CONTROL_MODE: ${SERVICE_CONTROL_MODE:-opt-in}
+      MINECRAFT_BACKEND: ${MINECRAFT_BACKEND:-auto}
+      MEDIA_REQUIRED_PROVIDERS: ${MEDIA_REQUIRED_PROVIDERS:-}
+      MEDIA_STACK_PROFILE: ${MEDIA_STACK_PROFILE:-auto}
+      NETWORK_REQUIRED_PROVIDERS: ${NETWORK_REQUIRED_PROVIDERS:-}
+      CRAFTY_API_TOKEN: ${CRAFTY_API_TOKEN:-}
+      CRAFTY_BASE_URL: ${CRAFTY_BASE_URL:-}
+      CRAFTY_ALLOW_INSECURE_TLS: ${CRAFTY_ALLOW_INSECURE_TLS:-false}
+      PTERODACTYL_BASE_URL: ${PTERODACTYL_BASE_URL:-}
+      PTERODACTYL_API_TOKEN: ${PTERODACTYL_API_TOKEN:-}
+      PELICAN_BASE_URL: ${PELICAN_BASE_URL:-}
+      PELICAN_API_TOKEN: ${PELICAN_API_TOKEN:-}
+      HOMELAB_CONTROL_CONFIG_FILE: ${HOMELAB_CONTROL_CONFIG_FILE:-/data/config.env}
+      WAKE_DEFAULT_LABEL: ${WAKE_DEFAULT_LABEL:-}
+      WAKE_DEFAULT_MAC: ${WAKE_DEFAULT_MAC:-}
+      WAKE_BROADCAST: ${WAKE_BROADCAST:-255.255.255.255}
+      HOMELAB_CONTROL_AGENT_URL: http://agent:8787
+      HOMELAB_CONTROL_VERSION: ${HOMELAB_CONTROL_VERSION:-0.3.18}
+      HOMELAB_CONTROL_REPOSITORY: ${HOMELAB_CONTROL_REPOSITORY:-}
+      HOMELAB_CONTROL_RELEASE_CHANNEL: ${HOMELAB_CONTROL_RELEASE_CHANNEL:-stable}
+      HOMELAB_CONTROL_RELEASE_ASSET: ${HOMELAB_CONTROL_RELEASE_ASSET:-}
+      WEEKLY_REPORT_WEBHOOK_URL: ${WEEKLY_REPORT_WEBHOOK_URL:-}
+      WEEKLY_REPORT_ENABLED: ${WEEKLY_REPORT_ENABLED:-true}
+      HEALTH_PORT: "3000"
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ${APP_DATA_DIR}/data/bot:/data
+    networks:
+      - tipi_main_network
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    labels:
+      homelab.control.component: bot
+      homelab.control.managed: "true"
+
+networks:
+  tipi_main_network:
+    external: true

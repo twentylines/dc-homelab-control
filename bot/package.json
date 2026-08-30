@@ -1,0 +1,17 @@
+{
+  "name": "homelab-control-bot",
+  "version": "0.3.18",
+  "private": true,
+  "type": "module",
+  "description": "Universal Discord control panel for Docker homelabs",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "discord.js": "14.27.0"
+  }
+}

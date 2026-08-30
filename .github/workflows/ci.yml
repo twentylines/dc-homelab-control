@@ -1,0 +1,51 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: bot/package-lock.json
+      - name: Run agent tests
+        run: python -m unittest discover -s agent -p 'test_*.py' -v
+      - name: Install bot dependencies
+        working-directory: bot
+        run: npm ci --ignore-scripts
+      - name: Run bot tests
+        working-directory: bot
+        env:
+          CONTROL_TOKEN: 0123456789abcdef0123456789abcdef
+          DISCORD_TOKEN: test-token
+          DISCORD_CLIENT_ID: 123456789012345678
+          DISCORD_GUILD_ID: 123456789012345678
+          DISCORD_OWNER_ID: 123456789012345678
+        run: npm test
+      - name: Validate source syntax and configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile agent/agent.py maintenance/homelab-control-maintenance-worker.py
+          sh -n scripts/install-compose.sh install-staged-app.sh
+          node --check bot/src/agent.js
+          for file in bot/src/*.js; do node --check "$file"; done
+          python -m json.tool app/config.json >/dev/null
+          cp config.example.env config.env
+          docker compose --env-file config.env -f compose.local.yml config >/dev/null
+          git diff --check
