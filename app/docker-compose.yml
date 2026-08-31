@@ -3,7 +3,7 @@ x-runtipi:
 
 services:
   agent:
-    image: ${HOMELAB_CONTROL_AGENT_IMAGE:-ghcr.io/twentylines/dc-homelab-control-agent:0.3.19}
+    image: ${HOMELAB_CONTROL_AGENT_IMAGE:-ghcr.io/twentylines/dc-homelab-control-agent:0.3.20}
     restart: unless-stopped
     environment:
       TZ: ${TZ:-UTC}
@@ -23,7 +23,7 @@ services:
       MAINTENANCE_DIR: /host/maintenance
       HOST_UPDATE_NOTIFIER_DIR: /host/update-notifier
       HOMELAB_CONTROL_REPOSITORY: ${HOMELAB_CONTROL_REPOSITORY:-}
-      HOMELAB_CONTROL_VERSION: ${HOMELAB_CONTROL_VERSION:-0.3.19}
+      HOMELAB_CONTROL_VERSION: ${HOMELAB_CONTROL_VERSION:-0.3.20}
       HOMELAB_CONTROL_RELEASE_CHANNEL: ${HOMELAB_CONTROL_RELEASE_CHANNEL:-stable}
       HOMELAB_CONTROL_RELEASE_ASSET: ${HOMELAB_CONTROL_RELEASE_ASSET:-}
       SERVICE_CONTROL_MODE: ${SERVICE_CONTROL_MODE:-opt-out}
@@ -84,7 +84,7 @@ services:
       homelab.control.managed: "true"
 
   bot:
-    image: ${HOMELAB_CONTROL_BOT_IMAGE:-ghcr.io/twentylines/dc-homelab-control-bot:0.3.19}
+    image: ${HOMELAB_CONTROL_BOT_IMAGE:-ghcr.io/twentylines/dc-homelab-control-bot:0.3.20}
     restart: unless-stopped
     depends_on:
       agent:
@@ -122,7 +122,7 @@ services:
       WAKE_DEFAULT_MAC: ${WAKE_DEFAULT_MAC:-}
       WAKE_BROADCAST: ${WAKE_BROADCAST:-255.255.255.255}
       HOMELAB_CONTROL_AGENT_URL: http://agent:8787
-      HOMELAB_CONTROL_VERSION: ${HOMELAB_CONTROL_VERSION:-0.3.19}
+      HOMELAB_CONTROL_VERSION: ${HOMELAB_CONTROL_VERSION:-0.3.20}
       HOMELAB_CONTROL_REPOSITORY: ${HOMELAB_CONTROL_REPOSITORY:-}
       HOMELAB_CONTROL_RELEASE_CHANNEL: ${HOMELAB_CONTROL_RELEASE_CHANNEL:-stable}
       HOMELAB_CONTROL_RELEASE_ASSET: ${HOMELAB_CONTROL_RELEASE_ASSET:-}

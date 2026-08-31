@@ -117,7 +117,7 @@ is the complete path from a fresh homelab to a tested public release:
 7. **Publish only what was tested.** Run the offline Python and Node test
    suites, review the support matrix, inspect the staged file list and perform
    a secret scan. Commit to the intended repository, create a version tag such
-   as `v0.3.19`, and let `.github/workflows/release.yml` create the source
+   as `v0.3.20`, and let `.github/workflows/release.yml` create the source
    archive, `SHA256SUMS`, GitHub release and versioned `amd64`/`arm64` GHCR
    images. Make the GHCR packages public before another host installs the
    Runtipi definition. Do not advertise an untested dashboard as supported.

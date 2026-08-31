@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (next release)
+## 0.3.20 - 2026-08-31
 
 1. Added verified GitHub rollback discovery: `/updates` now finds the highest
    earlier stable release when retained local control images are unavailable.
