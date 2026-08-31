@@ -526,6 +526,31 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertIn("Safer restart hand-off", status["release_notes"])
         self.assertNotIn("do-not-forward", status["release_notes"])
 
+    def test_bot_release_status_detects_compact_b_hotfix(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(self.module, "HOMELAB_CONTROL_REPOSITORY", "example/homelab-control"), \
+                patch.object(self.module, "HOMELAB_CONTROL_VERSION", "0.3.22"), \
+                patch.object(self.module, "BOT_RELEASE_STATUS_FILE", pathlib.Path(directory) / "bot-release.json"), \
+                patch.object(self.module, "_github_releases_payload", return_value=[]), \
+                patch.object(self.module, "_github_release_payload", return_value={
+                    "tag_name": "v0.3.22b",
+                    "prerelease": False,
+                    "body": "## 0.3.22b\n\n1. Changelog is visible in the confirmation panel.",
+                    "html_url": "https://github.com/example/homelab-control/releases/tag/v0.3.22b",
+                    "assets": [{
+                        "name": "homelab-control-0.3.22b.tar.gz",
+                        "browser_download_url": "https://github.com/example/homelab-control/releases/download/v0.3.22b/homelab-control-0.3.22b.tar.gz",
+                        "digest": "sha256:" + "c" * 64,
+                    }],
+                }):
+            self.module._bot_release_cache_value = None
+            self.module._bot_release_cache_timestamp = 0.0
+            status = self.module.bot_release_status(force=True)
+        self.assertEqual(status["latest"], "0.3.22b")
+        self.assertTrue(status["update_available"])
+        self.assertIn("Changelog is visible", status["release_notes"])
+
     def test_bot_release_status_discovers_verified_previous_github_release(self):
         import tempfile
 

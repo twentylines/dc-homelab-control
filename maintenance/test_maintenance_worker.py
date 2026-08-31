@@ -17,6 +17,8 @@ class MaintenanceWorkerTest(unittest.TestCase):
     def test_release_version_comparison_orders_stable_versions(self):
         self.assertLess(self.module._release_version_key("v0.3.18"), self.module._release_version_key("0.3.19"))
         self.assertLess(self.module._release_version_key("0.3.19-rc.1"), self.module._release_version_key("0.3.19"))
+        self.assertGreater(self.module._release_version_key("0.3.22b"), self.module._release_version_key("0.3.22"))
+        self.assertEqual(self.module.bot_version("v0.3.22B"), "0.3.22b")
         self.assertIsNone(self.module._release_version_key("latest"))
 
     def test_release_request_requires_exact_configured_github_asset(self):

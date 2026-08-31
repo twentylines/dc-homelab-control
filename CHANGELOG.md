@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.22b - 2026-08-31
+
+1. Published the complete numbered changelog in the GitHub release metadata so
+   the administrator confirmation panel shows the actual changes, not only a
+   compare URL.
+2. Added compact `b` hotfix release support to the read-only release check and
+   the manually confirmed update bridge.
+
 ## 0.3.22 - 2026-08-31
 
 1. Separated host-maintenance and bot-release status feeds so a control

@@ -93,7 +93,7 @@ RUNTIPI_UPDATE_ALL_TIMEOUT = max(120, min(780, int(os.getenv("RUNTIPI_UPDATE_ALL
 RUNTIPI_PROTECTED_APP_IDS = {"homelab-control", "hades-control", "backend", "runtipi"}
 CONTROL_BOT_NAME = os.getenv("CONTROL_BOT_NAME", "Homelab Control").strip() or "Homelab Control"
 HOMELAB_CONTROL_REPOSITORY = os.getenv("HOMELAB_CONTROL_REPOSITORY", "").strip()
-HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.3.22").strip() or "0.3.22"
+HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.3.22b").strip() or "0.3.22b"
 HOMELAB_CONTROL_RELEASE_CHANNEL = os.getenv("HOMELAB_CONTROL_RELEASE_CHANNEL", "stable").strip().lower() or "stable"
 HOMELAB_CONTROL_RELEASE_ASSET = os.getenv("HOMELAB_CONTROL_RELEASE_ASSET", "").strip()
 BOT_RELEASE_STATUS_FILE = MAINTENANCE_DIR / "bot-release.json"
@@ -2486,17 +2486,24 @@ def runtipi_updates(force=False):
     return json.loads(json.dumps(result))
 
 
-_RELEASE_RE = re.compile(r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
+_RELEASE_RE = re.compile(r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:(b)|-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$", re.IGNORECASE)
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100}$")
 _SHA256_RE = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
 
 
 def _release_version(value):
-    """Return a normalised semantic version or None for an unsafe tag."""
+    """Return a normalised release version or None for an unsafe tag.
+
+    ``0.3.22b`` is accepted as the project's compact hotfix notation.  It is
+    deliberately limited to the single ``b`` suffix; ordinary releases and
+    hyphenated pre-releases keep their normal semantic-version spelling.
+    """
     match = _RELEASE_RE.fullmatch(str(value or "").strip())
     if not match:
         return None
-    major, minor, patch, prerelease = match.groups()
+    major, minor, patch, hotfix, prerelease = match.groups()
+    if hotfix:
+        return f"{major}.{minor}.{patch}b"
     return f"{major}.{minor}.{patch}{f'-{prerelease}' if prerelease else ''}"
 
 
@@ -2505,6 +2512,11 @@ def _release_version_key(value):
     normalised = _release_version(value)
     if not normalised:
         return None
+    if normalised.lower().endswith("b") and "-" not in normalised:
+        base = normalised[:-1]
+        numbers = tuple(int(part) for part in base.split("."))
+        # The compact b hotfix is published after the matching stable patch.
+        return (*numbers, 2, "b")
     base, _, prerelease = normalised.partition("-")
     numbers = tuple(int(part) for part in base.split("."))
     # Stable releases are newer than a pre-release of the same version.  The
