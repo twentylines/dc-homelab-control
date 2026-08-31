@@ -92,24 +92,26 @@ from `HOMELAB_CONTROL_ENV_FILE` when possible; if they are the same file, the
 running containers stay online and you must restore the backup (or provide a
 new environment file) before a future restart.
 `/updates` shows each verified source-archive download size in adaptive units
-(the built image size is separate) and lets an administrator choose from the
-available GitHub history when a specific rollback is needed. The bridge
+(the built image size is separate). Quick choices are limited to the approved
+golden target, last major release and retained legacy version; the manual
+selector remains available for exceptional GitHub recovery. The bridge
 validates that exact metadata again before it downloads anything. It never
 updates other containers and never restarts the host.
 
 After the bridge is healthy, an administrator can open `/settings` and choose
-the release stream plus one of the opt-in schedules: `hotfix` checks compact
-   letter releases daily, `daily` checks the selected stream daily, and `weekly`
-   checks stable major lines on Sunday. The beta stream includes both stable
-   releases and pre-releases, but automatic beta updates are locked until the
-   administrator acknowledges the **beta live-patch route** shown in Settings →
-   Updates. Selecting beta alone never enables unattended updates; revoking the
-   acknowledgement turns the schedule off. The bot records the accepted job
-   and reports completion after the replacement containers answer both health
-   checks. Scheduled bot OTA completion is a one-shot compact extra embed on the
-   first successful slash-command response after restart; it does not post a
-   separate message and never appears again. Manual bot and host/Linux
-   operations keep their own completion response.
+the release channel plus one of the opt-in automatic-update policies: `hotfix`
+checks and installs compact letter releases daily, `daily` checks and installs
+stable releases and hotfixes daily, and `weekly` checks and installs stable
+releases weekly while checking and installing hotfixes daily. The beta channel
+includes both stable releases and pre-releases, but automatic beta updates are
+locked until the administrator acknowledges the **beta live-patch route** shown
+in Settings → Updates. Selecting beta alone never enables unattended updates;
+revoking the acknowledgement turns the schedule off. The bot records the
+accepted job and reports completion after the replacement containers answer
+both health checks. Scheduled bot OTA completion is a one-shot compact extra
+embed on the first successful slash-command response after restart; it does
+not post a separate message and never appears again. Manual bot and host/Linux
+operations keep their own completion response.
 
 The optional weekly webhook is intentionally a separate compact summary, not a
 copy of `/report`: it shows the system/runtime snapshot, adaptive storage

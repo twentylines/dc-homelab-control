@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { actionLoadingEmbed, bar, base, botMaintenanceLoadingEmbed, botMaintenanceRestartEmbed, botMaintenanceResultEmbed, botReleaseLoadingEmbed, botReleaseRestartEmbed, botReleaseResultEmbed, botReleaseSummary, botRollbackConfirmationEmbed, botRollbackOptionsEmbed, botRollbackOptionsRows, botUpdateConfirmationEmbed, bytes, controlsEmbed, controlsRows, duration, healthEmbed, helpEmbed, hostRestartResultEmbed, hostRestartWaitingEmbed, hostUpdateSummary, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, networkEmbed, operatingSystemLabel, operatingSystemShortLabel, panelEmbed, panelRows, pingEmbed, postUpdateNoticeEmbed, reportEmbeds, serviceRows, servicesEmbed, settingsEmbed, settingsRows, statusEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows, weeklyHealthEmbed } from '../src/ui.js';
+import { actionLoadingEmbed, bar, base, botMaintenanceLoadingEmbed, botMaintenanceRestartEmbed, botMaintenanceResultEmbed, botReleaseLoadingEmbed, botReleaseRestartEmbed, botReleaseResultEmbed, botReleaseSummary, botRollbackConfirmationEmbed, botRollbackOptionsEmbed, botRollbackOptionsRows, botUpdateConfirmationEmbed, bytes, controlsEmbed, controlsRows, deepBackRow, duration, healthEmbed, helpEmbed, hostRestartResultEmbed, hostRestartWaitingEmbed, hostUpdateSummary, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, networkEmbed, operatingSystemLabel, operatingSystemShortLabel, panelEmbed, panelRows, pingEmbed, postUpdateNoticeEmbed, reportEmbeds, serviceRows, servicesEmbed, settingsEmbed, settingsRows, statusEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows, weeklyHealthEmbed } from '../src/ui.js';
 import { minecraftInternals } from '../src/minecraft.js';
 
 const sampleStatus = {
@@ -250,6 +250,17 @@ test('panel refresh stays on the panel and all secondary views retain a back rou
   assert.ok(detail.some((component) => component.custom_id === 'nav:panel'));
 });
 
+test('deep views offer a direct home route beside their parent route', () => {
+  const buttons = deepBackRow('updates', 'Back to updates')[0].toJSON().components;
+  assert.deepEqual(buttons.map((button) => [button.custom_id, button.label]), [
+    ['nav:updates', 'Back to updates'],
+    ['nav:panel', 'Back to home'],
+  ]);
+  const detail = controlsRows([{ key: 'paperless', label: 'Paperless', container: 'paperless-1', enabled: false }], { mode: 'opt-in' }, { detail: true, selectedKey: 'paperless' })[0].toJSON().components;
+  assert.ok(detail.some((button) => button.custom_id === 'nav:panel' && button.label === 'Back to home'));
+  assert.equal(updateResultRows()[0].toJSON().components.at(-1).label, 'Back to home');
+});
+
 test('controls selection opens the selected container detail view', () => {
   const services = [
     { key: 'jellyfin', label: 'Jellyfin', container: 'jellyfin-1', state: 'running', enabled: true, manageable: true },
@@ -349,9 +360,13 @@ test('bot release UI reports GitHub checks and exposes guarded update and rollba
       rollback_version: '0.3.16',
       github_rollback_available: true,
       rollback_options: [
-        { version: '0.3.16', published_at: '2026-08-20T00:00:00Z', asset_digest: 'sha256:' + 'a'.repeat(64), asset_size: 2345678 },
-        { version: '0.3.15', published_at: '2026-08-10T00:00:00Z', asset_digest: 'sha256:' + 'b'.repeat(64), asset_size: 3456789 },
+        { version: '0.3.16', published_at: '2026-08-20T00:00:00Z', asset_digest: 'sha256:' + 'a'.repeat(64), asset_size: 2345678, approval: 'golden' },
+        { version: '0.3.15', published_at: '2026-08-10T00:00:00Z', asset_digest: 'sha256:' + 'b'.repeat(64), asset_size: 3456789, approval: 'last_major' },
         { version: '0.2.9', published_at: '2026-07-10T00:00:00Z', asset_digest: 'sha256:' + 'c'.repeat(64), asset_size: 4567890 },
+      ],
+      rollback_quick_options: [
+        { version: '0.3.16', quick_role: 'golden', asset_size: 2345678 },
+        { version: '0.3.15', quick_role: 'last_major', asset_size: 3456789 },
       ],
       phase: 'idle',
       detail: 'A newer verified release is ready',
@@ -377,20 +392,27 @@ test('bot release UI reports GitHub checks and exposes guarded update and rollba
   assert.equal(rollbackButton.label, 'Rollback options');
   const optionRows = botRollbackOptionsRows(snapshot.bot).map((row) => row.toJSON());
   assert.ok(optionRows.flatMap((row) => row.components).some((component) => component.custom_id === 'updates:bot-rollback-select'));
-  assert.ok(optionRows.flatMap((row) => row.components).some((component) => component.custom_id === 'updates:bot-rollback-version:0.2.9'));
+  assert.ok(optionRows.flatMap((row) => row.components).find((component) => component.custom_id === 'updates:bot-rollback-select').options.some((option) => option.value === '0.2.9'));
+  const quickButtons = optionRows.flatMap((row) => row.components).filter((component) => component.custom_id.startsWith('updates:bot-rollback-version:'));
+  assert.deepEqual(quickButtons.map((component) => component.label), ['Rollback to v0.3.16', 'Rollback to v0.3.15']);
   const optionsEmbed = botRollbackOptionsEmbed(snapshot.bot).toJSON();
   assert.match(optionsEmbed.title, /rollback options/i);
-  assert.match(optionsEmbed.description, /much older releases is not recommended/i);
-  assert.match(optionsEmbed.fields.find((field) => field.name === 'Recommended previous releases').value, /0\.2\.9/);
-  assert.match(optionsEmbed.fields.find((field) => field.name === 'Recommended previous releases').value, /4\.6 MB/);
-  assert.match(botRollbackOptionsEmbed({ ...snapshot.bot, rollback_options: [{ version: '0.3.16', asset_size: 1000000000 }] }).toJSON().fields[0].value, /1 GB/);
-  assert.match(botRollbackOptionsEmbed({ ...snapshot.bot, rollback_options: [{ version: '0.3.16', asset_size: null }] }).toJSON().fields[0].value, /size unavailable/);
+  assert.match(optionsEmbed.description, /only the approved golden target is recommended/i);
+  assert.match(optionsEmbed.fields.find((field) => field.name === 'Quick rollback choices').value, /approved golden target/);
+  assert.match(optionsEmbed.fields.find((field) => field.name === 'Quick rollback choices').value, /last major release fallback/);
+  assert.doesNotMatch(optionsEmbed.fields.find((field) => field.name === 'Quick rollback choices').value, /0\.2\.9/);
+  assert.equal(optionRows.flatMap((row) => row.components).find((component) => component.custom_id === 'updates:bot-rollback-select').placeholder, 'Select a legacy version · not recommended');
+  assert.match(botRollbackOptionsEmbed({ ...snapshot.bot, rollback_options: [{ version: '0.3.16', asset_size: 1000000000 }], rollback_quick_options: [{ version: '0.3.16', quick_role: 'golden', asset_size: 1000000000 }] }).toJSON().fields[0].value, /1 GB/);
+  assert.match(botRollbackOptionsEmbed({ ...snapshot.bot, rollback_options: [{ version: '0.3.16', asset_size: null }], rollback_quick_options: [{ version: '0.3.16', quick_role: 'golden', asset_size: null }] }).toJSON().fields[0].value, /size unavailable/);
   const rollbackConfirmation = botRollbackConfirmationEmbed(snapshot.bot, { version: '0.2.9' }).toJSON();
   assert.match(rollbackConfirmation.description, /0\.2\.9/);
-  assert.match(rollbackConfirmation.description, /much older releases is not recommended/i);
+  assert.match(rollbackConfirmation.description, /may be broken or obsolete/i);
   const retainedRows = botRollbackOptionsRows({ ...snapshot.bot, rollback_source: 'local', rollback_version: '0.3.17' }).flatMap((row) => row.toJSON().components);
   assert.ok(retainedRows.some((component) => component.custom_id === 'updates:bot-rollback-retained'));
-  assert.equal(botRollbackConfirmationEmbed({ rollback_version: null }, { local: true }).toJSON().description.includes('retained previous release'), true);
+  assert.equal(botRollbackConfirmationEmbed({ rollback_version: 'previous release' }, { local: true }).toJSON().description.includes('retained legacy version'), true);
+  const malformedRetained = botRollbackOptionsRows({ ...snapshot.bot, rollback_source: 'local', rollback_version: 'previous release' })
+    .flatMap((row) => row.toJSON().components);
+  assert.equal(malformedRetained.find((component) => component.custom_id === 'updates:bot-rollback-retained').label, 'Rollback to retained legacy version');
   const loading = botReleaseLoadingEmbed('update', { phase: 'downloading', latest: '0.3.18', events: [{ message: 'Downloading the verified GitHub release archive' }] }, 2).toJSON();
   assert.match(loading.description, /Downloading the release archive/);
   assert.match(loading.description, /both control containers answer their health checks/);
@@ -434,6 +456,25 @@ test('beta settings explain and gate the live-patch auto-update route', () => {
   assert.match(acknowledged.fields.find((field) => field.name.includes('Beta live-patch')).value, /automatic updates are allowed/i);
   const acknowledgedRows = settingsRows({ releaseChannel: 'beta', autoUpdateMode: 'daily', betaAutoUpdateConfirmed: true }, 'updates').flatMap((row) => row.toJSON().components);
   assert.ok(acknowledgedRows.some((component) => component.custom_id === 'settings:beta-revoke'));
+});
+
+test('update settings use channel names and explain that schedules install', () => {
+  const embed = settingsEmbed({ releaseChannel: 'stable', autoUpdateMode: 'weekly', autoUpdateHour: 4 }, {}, null, 'updates').toJSON();
+  assert.match(embed.fields.find((field) => field.name === 'Release channel').value, /Stable channel/);
+  assert.match(embed.fields.find((field) => field.name === 'Automatic updates').value, /Checks and installs stable releases weekly/i);
+
+  const rows = settingsRows({ releaseChannel: 'stable', autoUpdateMode: 'daily', autoUpdateHour: 4 }, 'updates')
+    .flatMap((row) => row.toJSON().components);
+  const modeMenu = rows.find((component) => component.custom_id === 'settings:auto-mode');
+  assert.equal(modeMenu.placeholder, 'Automatic updates · Daily checks · 04:00');
+  assert.deepEqual(modeMenu.options.map((option) => option.label), [
+    'Off · manual updates',
+    'Daily hotfixes · recommended',
+    'Daily checks',
+    'Weekly checks',
+  ]);
+  assert.ok(modeMenu.options.every((option) => option.description.includes('install') || option.value === 'off'));
+  assert.equal(rows.find((component) => component.custom_id === 'settings:release-channel').options[0].label, 'Stable channel');
 });
 
 test('Ubuntu maintenance UI reports pending security work and guarded actions', () => {

@@ -15,7 +15,7 @@ import { config } from './config.js';
 import { favoriteNames, getFavorite, saveFavorite } from './favorites.js';
 import { wakeDevice } from './wol.js';
 import {
-  actionLoadingEmbed, backButton, backRow, base, bytes, colors, errorEmbed, helpEmbed, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, operatingSystemIcon, operatingSystemShortLabel, pingEmbed, postUpdateNoticeEmbed,
+  actionLoadingEmbed, backButton, backRow, base, bytes, colors, deepBackRow, errorEmbed, helpEmbed, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, operatingSystemIcon, operatingSystemShortLabel, pingEmbed, postUpdateNoticeEmbed,
   controlsEmbed, controlsRows, healthEmbed, networkEmbed, panelEmbed, panelRows, reportEmbeds, serviceRows, servicesEmbed, statusEmbed, storageEmbed,
   settingsEmbed, settingsRows,
   botMaintenanceLoadingEmbed, botMaintenanceRestartEmbed, botMaintenanceResultEmbed, botReleaseLoadingEmbed, botReleaseRestartEmbed, botReleaseResultEmbed, botRollbackConfirmationEmbed, botRollbackOptionsEmbed, botRollbackOptionsRows, botUpdateConfirmationEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows,
@@ -185,6 +185,7 @@ function confirmRows(id) {
   return [new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`confirm:${id}`).setLabel('Confirm').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(`cancel:${id}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+    backButton('panel', 'Back to home'),
   )];
 }
 
@@ -216,7 +217,12 @@ function serviceActionRows(service, allowActions = true) {
   }
   buttons.push(new ButtonBuilder().setCustomId(`service-logs:${service.key}`).setLabel('Recent logs').setEmoji('📜').setStyle(ButtonStyle.Secondary));
   buttons.push(backButton('services', 'Back to services'));
-  return [new ActionRowBuilder().addComponents(buttons)];
+  buttons.push(backButton('panel', 'Back to home'));
+  const rows = [];
+  for (let index = 0; index < buttons.length; index += 5) {
+    rows.push(new ActionRowBuilder().addComponents(buttons.slice(index, index + 5)));
+  }
+  return rows;
 }
 
 function cleanMinecraftText(value, maximum = 180) {
@@ -252,7 +258,12 @@ function mcActionRows(server, allowActions = true) {
   }
   if (canManage) primary.push(new ButtonBuilder().setCustomId(`mc-action:${server.id}:backup`).setLabel('Backup').setEmoji('💾').setStyle(ButtonStyle.Secondary));
   primary.push(backButton('minecraft', 'Back to Minecraft'));
-  return [new ActionRowBuilder().addComponents(primary)];
+  primary.push(backButton('panel', 'Back to home'));
+  const rows = [];
+  for (let index = 0; index < primary.length; index += 5) {
+    rows.push(new ActionRowBuilder().addComponents(primary.slice(index, index + 5)));
+  }
+  return rows;
 }
 
 async function statusPayload() {
@@ -521,7 +532,7 @@ async function runSystemUpdateWorkflow(interaction, initialSnapshot = {}) {
       components: updatesRows({ updates: [] }, snapshot, isAdmin(interaction)),
     });
   } catch (error) {
-    await interaction.editReply({ embeds: [errorEmbed(error.message)], components: [] });
+    await interaction.editReply({ embeds: [errorEmbed(error.message)], components: deepBackRow('updates', 'Back to updates') });
   }
 }
 
@@ -539,7 +550,7 @@ async function runSystemRebootWorkflow(interaction, jobId) {
     await interaction.editReply({ embeds: [base(`${osName} // restart queued`, '🟡 The host is restarting now. This message will be updated after the new boot is verified.').setColor(colors.warn)], components: [] });
   } catch (error) {
     clearHostRebootResume();
-    await interaction.editReply({ embeds: [errorEmbed(error.message)], components: [] });
+    await interaction.editReply({ embeds: [errorEmbed(error.message)], components: deepBackRow('updates', 'Back to updates') });
   }
 }
 
@@ -579,7 +590,7 @@ async function runBotReleaseWorkflow(interaction, action, selectedVersion = '') 
     clearBotReleaseResume();
   } catch (error) {
     if (accepted) {
-      await interaction.editReply({ embeds: [botReleaseRestartEmbed(action, release)], components: [] }).catch(() => {});
+      await interaction.editReply({ embeds: [botReleaseRestartEmbed(action, release)], components: deepBackRow('updates', 'Back to updates') }).catch(() => {});
       return;
     }
     clearBotReleaseResume();
@@ -613,7 +624,7 @@ async function runBotMaintenanceWorkflow(interaction, action) {
     clearBotMaintenanceResume();
   } catch (error) {
     if (accepted) {
-      await interaction.editReply({ embeds: [botMaintenanceRestartEmbed(action, release)], components: [] }).catch(() => {});
+      await interaction.editReply({ embeds: [botMaintenanceRestartEmbed(action, release)], components: deepBackRow('settings', 'Back to settings') }).catch(() => {});
       return;
     }
     clearBotMaintenanceResume();
@@ -699,7 +710,7 @@ export async function handleCommand(interaction) {
     if (interaction.commandName === 'tasks') startTasksLive(interaction, message?.id || interaction.id, initialTaskSnapshot);
   } catch (error) {
     if (stopLoadingAnimation) await stopLoadingAnimation();
-    await interaction.editReply({ embeds: [errorEmbed(error.message)], components: [] });
+    await interaction.editReply({ embeds: [errorEmbed(error.message)], components: backRow('panel') });
   }
 }
 
@@ -790,9 +801,9 @@ export async function handleComponent(interaction) {
     }
 
     if (interaction.customId === 'settings:release-channel') {
-      if (!isAdmin(interaction)) throw new Error('Administrator access is required to change the release stream');
+      if (!isAdmin(interaction)) throw new Error('Administrator access is required to change the release channel');
       const channel = interaction.values?.[0];
-      if (!['stable', 'beta'].includes(channel)) throw new Error('Choose a release stream first');
+      if (!['stable', 'beta'].includes(channel)) throw new Error('Choose a release channel first');
       await interaction.deferUpdate();
       const current = readSettings();
       const enteringBeta = channel === 'beta' && current.releaseChannel !== 'beta';
@@ -809,7 +820,7 @@ export async function handleComponent(interaction) {
 
     if (interaction.customId === 'settings:beta-acknowledge') {
       if (!isAdmin(interaction)) throw new Error('Administrator access is required to acknowledge beta updates');
-      if (readSettings().releaseChannel !== 'beta') throw new Error('Select the Beta stream before acknowledging its live-patch route');
+      if (readSettings().releaseChannel !== 'beta') throw new Error('Select the Beta channel before acknowledging its live-patch route');
       await interaction.deferUpdate();
       updateSettings({ betaAutoUpdateConfirmed: true });
       await interaction.editReply(await settingsPayload('updates'));
@@ -818,7 +829,7 @@ export async function handleComponent(interaction) {
 
     if (interaction.customId === 'settings:beta-revoke') {
       if (!isAdmin(interaction)) throw new Error('Administrator access is required to revoke beta updates');
-      if (readSettings().releaseChannel !== 'beta') throw new Error('Beta stream is not selected');
+      if (readSettings().releaseChannel !== 'beta') throw new Error('Beta channel is not selected');
       await interaction.deferUpdate();
       updateSettings({ betaAutoUpdateConfirmed: false, autoUpdateMode: 'off' });
       await interaction.editReply(await settingsPayload('updates'));
@@ -1133,7 +1144,7 @@ export async function handleComponent(interaction) {
       await interaction.deferReply({ ephemeral: true });
       const key = interaction.customId.split(':')[1];
       const logs = (await agent.logs(key)).join('\n').slice(-3800) || 'No recent logs.';
-      await interaction.editReply({ embeds: [base(`Recent logs • ${key}`, `\`\`\`text\n${logs}\n\`\`\``)], components: backRow('services', 'Back to services') }); return;
+      await interaction.editReply({ embeds: [base(`Recent logs • ${key}`, `\`\`\`text\n${logs}\n\`\`\``)], components: deepBackRow('services', 'Back to services') }); return;
     }
 
     if (interaction.customId.startsWith('service-action:')) {
@@ -1192,7 +1203,7 @@ export async function handleComponent(interaction) {
 
     if (interaction.customId.startsWith('cancel:')) {
       confirmations.delete(interaction.customId.split(':')[1]);
-      await interaction.update({ embeds: [base('Cancelled', 'No action was taken.')], components: [] }); return;
+      await interaction.update({ embeds: [base('Cancelled', 'No action was taken.')], components: backRow('panel') }); return;
     }
 
     if (interaction.customId.startsWith('confirm:')) {
@@ -1270,16 +1281,16 @@ export async function handleComponent(interaction) {
         else await crafty.action(pending.serverId, pending.action, interaction.user);
         actionActive = false;
         await actionAnimation;
-        await interaction.editReply({ embeds: [base('Action completed', `✅ **${pending.action}** completed on **${actionTarget}**.`).setColor(colors.ok)], components: backRow(pending.type === 'service' ? 'services' : 'minecraft', pending.type === 'service' ? 'Back to services' : 'Back to Minecraft') });
+        await interaction.editReply({ embeds: [base('Action completed', `✅ **${pending.action}** completed on **${actionTarget}**.`).setColor(colors.ok)], components: deepBackRow(pending.type === 'service' ? 'services' : 'minecraft', pending.type === 'service' ? 'Back to services' : 'Back to Minecraft') });
       } catch (error) {
         actionActive = false;
         await actionAnimation;
-        await interaction.editReply({ embeds: [errorEmbed(error.message)], components: backRow(pending.type === 'service' ? 'services' : 'minecraft', pending.type === 'service' ? 'Back to services' : 'Back to Minecraft') });
+        await interaction.editReply({ embeds: [errorEmbed(error.message)], components: deepBackRow(pending.type === 'service' ? 'services' : 'minecraft', pending.type === 'service' ? 'Back to services' : 'Back to Minecraft') });
       }
       return;
     }
   } catch (error) {
-    const payload = { embeds: [errorEmbed(error.message)], components: [] };
+    const payload = { embeds: [errorEmbed(error.message)], components: backRow('panel') };
     if (interaction.deferred || interaction.replied) await interaction.editReply(payload);
     else await interaction.reply({ ephemeral: true, ...payload });
   }
@@ -1315,8 +1326,8 @@ export async function handleModal(interaction) {
     const command = interaction.fields.getTextInputValue('command').trim().replace(/^\//, '');
     if (!command || consoleDeny.test(command)) throw new Error('That command is intentionally blocked here; use the dedicated controls or the Minecraft panel');
     await crafty.command(serverId, command);
-    await interaction.editReply({ embeds: [base('Command sent', `✅ Sent to the Minecraft panel: \`${command.replace(/`/g, '')}\``).setColor(colors.ok)] });
+    await interaction.editReply({ embeds: [base('Command sent', `✅ Sent to the Minecraft panel: \`${command.replace(/`/g, '')}\``).setColor(colors.ok)], components: backRow('panel') });
   } catch (error) {
-    await interaction.editReply({ embeds: [errorEmbed(error.message)] });
+    await interaction.editReply({ embeds: [errorEmbed(error.message)], components: backRow('panel') });
   }
 }

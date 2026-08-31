@@ -99,7 +99,7 @@ RUNTIPI_UPDATE_ALL_TIMEOUT = max(120, min(780, int(os.getenv("RUNTIPI_UPDATE_ALL
 RUNTIPI_PROTECTED_APP_IDS = {"homelab-control", "hades-control", "backend", "runtipi"}
 CONTROL_BOT_NAME = os.getenv("CONTROL_BOT_NAME", "Homelab Control").strip() or "Homelab Control"
 HOMELAB_CONTROL_REPOSITORY = os.getenv("HOMELAB_CONTROL_REPOSITORY", "").strip()
-HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.4.0").strip() or "0.4.0"
+HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.4.0a").strip() or "0.4.0a"
 HOMELAB_CONTROL_RELEASE_CHANNEL = os.getenv("HOMELAB_CONTROL_RELEASE_CHANNEL", "stable").strip().lower() or "stable"
 if HOMELAB_CONTROL_RELEASE_CHANNEL not in {"stable", "beta"}:
     HOMELAB_CONTROL_RELEASE_CHANNEL = "stable"
@@ -1696,10 +1696,33 @@ def _os_identity(path: Path, source: str, unavailable_name: str):
 def host_os():
     """Return the host identity from the explicitly mounted host file.
 
-    Never fall back to the agent image's `/etc/os-release`: that describes the
-    container (often Alpine), not the machine running Docker.
+    The direct `/host/etc/os-release` bind is preferred. Some Docker/Runtipi
+    setups do not preserve that bind when a generated Compose file is
+    regenerated, so also try the host PID 1 root through the already-mounted
+    host `/proc`. Never fall back to the agent image's `/etc/os-release`: that
+    describes the container (often Alpine), not the machine running Docker.
     """
-    return _os_identity(HOST_OS_RELEASE_FILE, "host-os-release", "Host OS unavailable")
+    candidates = [
+        (HOST_OS_RELEASE_FILE, "host-os-release"),
+        (HOST_PROC / "1/root/etc/os-release", "host-proc-root-os-release"),
+        (HOST_PROC / "1/root/usr/lib/os-release", "host-proc-root-os-release"),
+        (Path("/host/usr/lib/os-release"), "host-os-release"),
+    ]
+    seen = set()
+    unavailable = None
+    for path, source in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        identity = _os_identity(path, source, "Host OS unavailable")
+        unavailable = unavailable or identity
+        if identity["id"] != "unknown":
+            return identity
+    return unavailable or _os_identity(HOST_OS_RELEASE_FILE, "host-os-release", "Host OS unavailable")
 
 
 def container_os():
@@ -2894,15 +2917,17 @@ def _github_rollback_options(repository, current, channel=None):
         return [], "No earlier GitHub release with a verified source archive was found"
     candidates.sort(key=lambda item: item[0], reverse=True)
     # Keep every verified compact hotfix in the currently installed numeric
-    # line so a bad letter release can be selected precisely. For older lines,
-    # expose only the newest verified release; this keeps the selector useful
-    # on a long-lived deployment instead of listing many near-duplicates.
+    # line so a bad letter release can be selected precisely. Explicitly
+    # approved golden and last-major versions are also kept even when a newer
+    # hotfix exists on the same older line; the manual selector remains bounded
+    # by the release history limit below.
     current_line = _release_line(current)
     grouped = []
     seen_older_lines = set()
     for _key, candidate in candidates:
         line = candidate.get("release_line") or _release_line(candidate.get("version"))
-        if line != current_line:
+        approved_target = candidate.get("approval") in {"golden", "last_major"}
+        if line != current_line and not approved_target:
             if line in seen_older_lines:
                 continue
             seen_older_lines.add(line)
@@ -2926,26 +2951,15 @@ def _github_rollback_fields(repository, current, local_available=False, local_ve
     except (OSError, urllib.error.URLError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         options, previous = [], None
         detail = f"Previous GitHub releases could not be checked ({exc.__class__.__name__})"
-    current_line = _release_line(current)
-    # The quick list is deliberately conservative: one newest verified release
-    # per older numeric patch line, plus explicitly approved golden/LTS lines.
+    policy = _github_release_policy(repository)
+    # The quick list is deliberately conservative: only explicitly approved
+    # golden and last-major targets are promoted to buttons. All other verified
+    # history stays selector-only and is labelled as legacy/not recommended.
     quick = []
-    seen_lines = set()
-    for role in ("golden", "lts", "last_major"):
+    for role in ("golden", "last_major"):
         candidate = next((option for option in options if option.get("approval") == role), None)
         if candidate and candidate.get("version") not in {item.get("version") for item in quick}:
             quick.append({**candidate, "quick_role": role})
-    for option in options:
-        line = option.get("release_line") or _release_line(option.get("version"))
-        if line == current_line or line in seen_lines:
-            continue
-        seen_lines.add(line)
-        if option.get("version") in {item.get("version") for item in quick}:
-            continue
-        quick.append({**option, "quick_role": "previous-line"})
-        if len(quick) >= 6:
-            break
-    policy = _github_release_policy(repository)
     return {
         "rollback_available": bool(local_available or previous),
         "rollback_source": "local" if local_available else "github" if previous else None,

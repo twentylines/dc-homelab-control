@@ -62,7 +62,7 @@ export function operatingSystemIcon(data = {}) {
   return '🖥️';
 }
 
-export function backButton(target = 'panel', label = 'Back to panel') {
+export function backButton(target = 'panel', label = 'Back to home') {
   return new ButtonBuilder()
     .setCustomId(`nav:${target}`)
     .setLabel(label)
@@ -70,8 +70,15 @@ export function backButton(target = 'panel', label = 'Back to panel') {
     .setStyle(ButtonStyle.Secondary);
 }
 
-export function backRow(target = 'panel', label = 'Back to panel') {
+export function backRow(target = 'panel', label = 'Back to home') {
   return [new ActionRowBuilder().addComponents(backButton(target, label))];
+}
+
+export function deepBackRow(target, label) {
+  return [new ActionRowBuilder().addComponents(
+    backButton(target, label),
+    backButton('panel', 'Back to home'),
+  )];
 }
 
 function commandTitle(data, title) {
@@ -505,7 +512,7 @@ export function panelEmbed(data, services, media, updates = null, mediaSummary =
   // Put the controller first: it is the only component that can report back
   // after replacing itself.  Optional Runtipi status is omitted entirely when
   // that integration is not configured or currently unavailable.
-  if (botState) softwareLines.push(`**${bot.channel === 'beta' ? 'Beta' : 'Stable'} bot** ${botState}`);
+  if (botState) softwareLines.push(`**${bot.channel === 'beta' ? 'Beta' : 'Stable'} channel** ${botState}`);
   if (runtipiState) softwareLines.push(`**Runtipi apps** ${runtipiState}`);
   if (!softwareLines.length) softwareLines.push('No software update sources are configured');
   return base(commandTitle(data, 'control centre'), `${result.critical ? '🔴' : result.issues.length ? '🟡' : '🟢'} **${result.label}**\nYour live command centre for the home server.`, 'Home-server control panel')
@@ -590,7 +597,7 @@ export function botUpdateConfirmationEmbed(release) {
 
 function rollbackVersion(value) {
   const cleaned = safeUpdateText(value, 32).replace(/^v/i, '').toLowerCase();
-  return cleaned && cleaned !== 'unknown' ? cleaned : '';
+  return /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[a-z]|-[0-9a-z.-]+)?$/.test(cleaned) ? cleaned : '';
 }
 
 function rollbackButtonLabel(version) {
@@ -613,58 +620,57 @@ function rollbackOptionsFor(release) {
 }
 
 function recommendedRollbackOptions(release) {
-  if (Array.isArray(release?.rollback_quick_options) && release.rollback_quick_options.length) {
-    return release.rollback_quick_options.slice(0, 6);
-  }
   const options = rollbackOptionsFor(release);
-  const selected = [];
-  const lines = new Set();
-  // Prefer the newest verified release from each 0.x minor line, then fill
-  // the remaining slots with the next newest versions. This keeps the
-  // buttons useful without hiding the complete GitHub history in the menu.
-  for (const option of options) {
-    const match = option.version.match(/^(\d+)\.(\d+)\./);
-    const line = match ? `${match[1]}.${match[2]}` : option.version;
-    if (lines.has(line)) continue;
-    lines.add(line);
-    selected.push(option);
-    if (selected.length >= 4) break;
-  }
-  for (const option of options) {
-    if (selected.length >= 4) break;
-    if (!selected.some((item) => item.version === option.version)) selected.push(option);
-  }
-  return selected;
+  const quick = Array.isArray(release?.rollback_quick_options)
+    ? release.rollback_quick_options
+    : options.filter((option) => ['golden', 'last_major'].includes(option.approval))
+      .map((option) => ({ ...option, quick_role: option.approval }));
+  const seen = new Set();
+  return quick.filter((option) => {
+    const version = rollbackVersion(option?.version);
+    const role = String(option?.quick_role || '').toLowerCase();
+    if (!version || !['golden', 'last_major'].includes(role) || seen.has(version)) return false;
+    seen.add(version);
+    return true;
+  }).map((option) => ({ ...option, version: rollbackVersion(option.version) })).slice(0, 2);
+}
+
+function rollbackTargetRole(option) {
+  const role = String(option?.quick_role || option?.approval || '').toLowerCase();
+  if (role === 'golden') return 'approved golden target';
+  if (role === 'last_major') return 'last major release fallback';
+  return 'legacy version · not recommended';
 }
 
 function rollbackOptionDescription(option) {
   const published = String(option?.published_at || '').slice(0, 10);
   const size = releaseSizeBytes(option?.asset_size) !== null ? ` · ${releaseSizeLabel(option.asset_size)}` : '';
-  return `Verified GitHub archive${size}${/^\d{4}-\d{2}-\d{2}$/.test(published) ? ` · ${published}` : ''}`.slice(0, 100);
+  return `${rollbackTargetRole(option)} · verified GitHub archive${size}${/^\d{4}-\d{2}-\d{2}$/.test(published) ? ` · ${published}` : ''}`.slice(0, 100);
 }
 
 export function botRollbackOptionsEmbed(release) {
   const options = rollbackOptionsFor(release);
   const localVersion = rollbackVersion(release?.rollback_version);
+  const localAvailable = release?.rollback_available && release?.rollback_source === 'local';
   const recommended = recommendedRollbackOptions(release);
   const current = rollbackVersion(release?.current) || 'unknown';
   const history = options.length
     ? `**${options.length}** verified GitHub version${options.length === 1 ? '' : 's'} are available below.`
     : 'No verified GitHub archive is currently available.';
-  const local = release?.rollback_available && localVersion
-    ? `A retained local image pair is also available at **v${localVersion}**.`
-    : release?.rollback_available
-      ? 'A retained local rollback is available, but its version is not labelled.'
+  const local = localAvailable && localVersion
+    ? `A retained legacy image pair is also available locally at **v${localVersion}**.`
+    : localAvailable
+      ? 'A retained legacy rollback is available locally, but its version is not labelled.'
       : 'No retained local image pair is available.';
   const embed = base(
     'Homelab Control // rollback options',
-    `Current version · **v${safeUpdateText(current, 40)}** · ${release?.channel === 'beta' ? 'Beta stream' : 'Stable stream'}\n\nChoose a previous version to review before anything changes. ${history} ${local}\n\nThe quick choices use the cloud-published golden, LTS and previous-line approvals when they are available. The full menu is for exact older releases.\n\n⚠️ **Reverting to much older releases is not recommended.** Older builds may be incompatible with the current configuration, APIs or stored data. Prefer the newest verified option unless you have a specific reason to go further back.`,
+    `Current version · **v${safeUpdateText(current, 40)}** · ${release?.channel === 'beta' ? 'Beta channel' : 'Stable channel'}\n\nChoose a recovery target before anything changes. ${history} ${local}\n\nOnly the approved golden target is recommended. The last major release and retained legacy images are fallback paths; every other older version is legacy and not recommended because it may be broken or obsolete.`,
     'Manual administrator action · exact GitHub archive and SHA-256 digest are checked',
   ).setColor(colors.warn);
   if (recommended.length) {
     embed.addFields({
-      name: 'Recommended previous releases',
-      value: recommended.map((option) => `• **v${safeUpdateText(option.version, 40)}** · ${releaseSizeBytes(option.asset_size) !== null ? releaseSizeLabel(option.asset_size) : 'size unavailable'} · newest verified option in its release line`).join('\n').slice(0, 1024),
+      name: 'Quick rollback choices',
+      value: recommended.map((option) => `• **v${safeUpdateText(option.version, 40)}** · ${rollbackTargetRole(option)} · ${releaseSizeBytes(option.asset_size) !== null ? releaseSizeLabel(option.asset_size) : 'size unavailable'}`).join('\n').slice(0, 1024),
       inline: false,
     });
   }
@@ -685,12 +691,12 @@ export function botRollbackOptionsRows(release) {
     // of silently replacing a local restore with a download.
     buttons.push({ version: localVersion, local: true });
   }
-  const rows = backRow('updates', 'Back to updates');
+  const rows = deepBackRow('updates', 'Back to updates');
   for (let index = 0; index < buttons.length; index += 5) {
     rows.push(new ActionRowBuilder().addComponents(buttons.slice(index, index + 5).map((option) => (
       new ButtonBuilder()
         .setCustomId(option.local ? 'updates:bot-rollback-retained' : `updates:bot-rollback-version:${safeUpdateText(option.version, 32)}`)
-        .setLabel(option.local ? (localVersion ? `Rollback to retained v${localVersion}` : 'Rollback to retained version') : option.quick_role === 'golden' ? `Golden v${option.version}` : option.quick_role === 'lts' ? `LTS v${option.version}` : option.quick_role === 'last_major' ? `Previous line v${option.version}` : rollbackButtonLabel(option.version))
+        .setLabel(option.local ? (localVersion ? `Rollback to retained legacy v${localVersion}` : 'Rollback to retained legacy version') : rollbackButtonLabel(option.version))
         .setEmoji('↩️')
         .setStyle(ButtonStyle.Secondary)
     ))));
@@ -699,7 +705,7 @@ export function botRollbackOptionsRows(release) {
     rows.push(new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId('updates:bot-rollback-select')
-        .setPlaceholder('Select a previous version')
+        .setPlaceholder('Select a legacy version · not recommended')
         .addOptions(options.map((option) => ({
           label: `v${safeUpdateText(option.version, 80)}`.slice(0, 100),
           value: safeUpdateText(option.version, 80),
@@ -712,14 +718,15 @@ export function botRollbackOptionsRows(release) {
 
 export function botRollbackConfirmationEmbed(release, selection = {}) {
   const version = rollbackVersion(selection?.version || release?.rollback_version);
-  const target = version ? `v${version}` : (selection?.local ? 'retained previous release' : 'selected release');
+  const target = version ? `v${version}` : (selection?.local ? 'retained legacy version' : 'selected release');
   const source = selection?.local
     ? 'The bridge will use the retained local control images when available.'
     : 'The bridge will fetch this exact GitHub release, verify its SHA-256 digest, and build only the control agent and bot.';
   const size = releaseSizeBytes(selection?.asset_size) !== null ? ` Source archive size · **${releaseSizeLabel(selection.asset_size)}**.` : '';
+  const role = selection?.local ? 'retained legacy fallback' : rollbackTargetRole(selection);
   return base(
     'Confirm Homelab Control rollback',
-    `Roll back to **${safeUpdateText(target, 50)}**?${size}\n\n${source}\n\n⚠️ Reverting to much older releases is not recommended because configuration, APIs or stored data may no longer be compatible. Only the control containers will be changed, and both health checks must pass before completion is reported.`,
+    `Roll back to **${safeUpdateText(target, 50)}** (${role})?${size}\n\n${source}\n\n⚠️ Only the approved golden target is recommended. This fallback may be broken or obsolete; verify the configuration, APIs and stored data remain compatible. Only the control containers will be changed, and both health checks must pass before completion is reported.`,
     'Manual administrator confirmation · no other containers are changed',
   ).setColor(colors.warn);
 }
@@ -743,8 +750,11 @@ function botRollbackLine(release) {
     : options.length
       ? 'retained locally · GitHub history ready'
       : 'retained locally';
-  const newest = options[0]?.version || rollbackVersion(release.rollback_version) || 'previous version';
-  return `↩️ Rollback options · newest **v${safeUpdateText(newest, 40)}** · ${source}`;
+  const quick = recommendedRollbackOptions(release);
+  const targetSummary = quick.length
+    ? `${quick.length} approved target${quick.length === 1 ? '' : 's'}`
+    : 'manual legacy selector';
+  return `↩️ Rollback options · ${targetSummary} · ${source}`;
 }
 
 export function botReleaseSummary(release) {
@@ -939,15 +949,30 @@ function identityList(values, fallback = 'none configured') {
   return entries.length ? entries.map((value) => '`' + safeUpdateText(value, 25) + '`').join(', ') : fallback;
 }
 
+function automaticUpdateModeLabel(mode, scheduleHour) {
+  if (mode === 'hotfix') return `Daily hotfixes · ${scheduleHour}:00`;
+  if (mode === 'daily') return `Daily checks · ${scheduleHour}:00`;
+  if (mode === 'weekly') return 'Weekly checks · stable weekly · hotfixes daily';
+  return 'Off · manual updates';
+}
+
 export function settingsEmbed(settings = {}, status = {}, policy = null, category = 'home') {
   const mode = settings.autoUpdateMode || 'off';
-  const modeLabel = mode === 'off' ? 'off' : mode === 'hotfix' ? 'hotfixes daily (recommended)' : `${mode} at ${String(settings.autoUpdateHour ?? 4).padStart(2, '0')}:00 local time`;
+  const scheduleHour = String(settings.autoUpdateHour ?? 4).padStart(2, '0');
+  const modeLabel = automaticUpdateModeLabel(mode, scheduleHour);
+  const modeDescription = mode === 'off'
+    ? 'No automatic checks or installs. You choose every update.'
+    : mode === 'hotfix'
+      ? 'Checks and installs compact letter hotfixes each day.'
+      : mode === 'daily'
+        ? 'Checks and installs stable releases and hotfixes each day.'
+        : 'Checks and installs stable releases weekly; checks and installs hotfixes daily.';
   const betaSelected = settings.releaseChannel === 'beta';
   const betaConfirmed = settings.betaAutoUpdateConfirmed === true;
   const displayedModeLabel = betaSelected && !betaConfirmed && mode !== 'off'
     ? `locked until beta acknowledgement (configured: ${modeLabel})`
     : modeLabel;
-  const stream = betaSelected ? 'Beta stream (stable + pre-releases)' : 'Stable stream';
+  const channel = betaSelected ? 'Beta channel (stable + pre-releases)' : 'Stable channel';
   const host = operatingSystemLabel(status, 'Host OS unavailable');
   const server = serverName(status);
   const superuserIds = [...new Set([config.ownerId, ...(settings.superuserIds || [])])];
@@ -958,7 +983,7 @@ export function settingsEmbed(settings = {}, status = {}, policy = null, categor
       : category === 'access'
         ? 'Manage who can use the private panel. The configured owner always remains a superuser.'
         : category === 'updates'
-          ? 'Choose the release stream and whether the bot may update itself on a schedule. Off is the default.'
+          ? 'Choose the release channel and automatic update policy. Enabled policies check and install eligible releases after verification; Off stays manual.'
           : category === 'controls'
             ? 'Controls are detected from Docker. Opt-out enables them by default; protected control-plane containers remain read-only.'
             : category === 'recovery'
@@ -968,7 +993,7 @@ export function settingsEmbed(settings = {}, status = {}, policy = null, categor
   ).setColor(colors.idle);
   if (category === 'home') {
     embed.addFields(
-      { name: 'Update behaviour', value: `**Stream** ${stream}\n**Auto-update** ${displayedModeLabel}`, inline: true },
+      { name: 'Update behaviour', value: `**Channel** ${channel}\n**Automatic updates** ${displayedModeLabel}`, inline: true },
       { name: 'Connection', value: `**Host** ${safeUpdateText(host, 120)}\n**Server** ${safeUpdateText(server, 80)}\n**Containers** ${status.containers ? `${status.containers.running}/${status.containers.total} running` : 'not reported'}`, inline: true },
       { name: 'Access', value: `**Admins** ${identityList(settings.adminUserIds)}\n**Guests** ${identityList(settings.guestUserIds)}\n**Superusers** ${identityList(superuserIds)}`, inline: false },
     );
@@ -980,8 +1005,8 @@ export function settingsEmbed(settings = {}, status = {}, policy = null, categor
     );
   } else if (category === 'updates') {
     embed.addFields(
-      { name: 'Release stream', value: `**${stream}**\nBeta is opt-in and receives stable releases plus GitHub pre-releases.`, inline: true },
-      { name: 'Automatic checks', value: `**${displayedModeLabel}**\nWeekly checks are for stable major releases; hotfixes are checked daily. Nothing changes when this is off.`, inline: true },
+      { name: 'Release channel', value: `**${channel}**\nThe Beta channel is opt-in and receives stable releases plus GitHub pre-releases.`, inline: true },
+      { name: 'Automatic updates', value: `**${displayedModeLabel}**\n${modeDescription}`, inline: true },
     );
     if (betaSelected) {
       embed.addFields({
@@ -1010,9 +1035,10 @@ export function settingsEmbed(settings = {}, status = {}, policy = null, categor
 
 export function settingsRows(settings = {}, category = 'home', policy = null, page = 0) {
   const scheduleHour = String(settings.autoUpdateHour ?? 4).padStart(2, '0');
+  const selectedModeLabel = automaticUpdateModeLabel(settings.autoUpdateMode || 'off', scheduleHour);
   const autoModePlaceholder = settings.releaseChannel === 'beta' && settings.betaAutoUpdateConfirmed !== true && settings.autoUpdateMode && settings.autoUpdateMode !== 'off'
     ? 'Automatic updates · locked'
-    : `Automatic updates · ${settings.autoUpdateMode || 'off'}`;
+    : `Automatic updates · ${selectedModeLabel}`;
   const home = [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('settings:category:access').setLabel('Access').setEmoji('👥').setStyle(ButtonStyle.Secondary),
@@ -1039,14 +1065,14 @@ export function settingsRows(settings = {}, category = 'home', policy = null, pa
     if (removable.length) rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('settings:remove').setPlaceholder('Remove an identity').addOptions(removable.map((entry) => ({ label: entry.id, value: entry.id, description: entry.label })))));
   } else if (category === 'updates') {
     rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('settings:auto-mode').setPlaceholder(autoModePlaceholder).addOptions([
-      { label: 'Off · manual updates', value: 'off', description: 'Recommended when you want full control' },
-      { label: 'Hotfixes daily · recommended', value: 'hotfix', description: `Check every day at ${scheduleHour}:00 for compact letter hotfixes` },
-      { label: 'Daily stable checks', value: 'daily', description: `Check every day at ${scheduleHour}:00 for stable releases` },
-      { label: 'Weekly stable checks', value: 'weekly', description: `Check Sundays at ${scheduleHour}:00 for stable major releases` },
+      { label: 'Off · manual updates', value: 'off', description: 'No automatic checks or installs' },
+      { label: 'Daily hotfixes · recommended', value: 'hotfix', description: `Check and install compact hotfixes daily at ${scheduleHour}:00` },
+      { label: 'Daily checks', value: 'daily', description: `Check and install stable releases and hotfixes daily at ${scheduleHour}:00` },
+      { label: 'Weekly checks', value: 'weekly', description: `Stable releases weekly; check and install hotfixes daily` },
     ])));
-    rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('settings:release-channel').setPlaceholder(`Release stream · ${settings.releaseChannel || 'stable'}`).addOptions([
-      { label: 'Stable stream', value: 'stable', description: 'Published stable releases only' },
-      { label: 'Beta stream (opt-in)', value: 'beta', description: 'Includes stable releases and GitHub pre-releases' },
+    rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('settings:release-channel').setPlaceholder(`Release channel · ${settings.releaseChannel || 'stable'}`).addOptions([
+      { label: 'Stable channel', value: 'stable', description: 'Published stable releases only' },
+      { label: 'Beta channel (opt-in)', value: 'beta', description: 'Includes stable releases and GitHub pre-releases' },
     ])));
     if (settings.releaseChannel === 'beta') {
       rows.push(new ActionRowBuilder().addComponents(
@@ -1073,7 +1099,7 @@ export function settingsRows(settings = {}, category = 'home', policy = null, pa
     const services = Array.isArray(policy?.services) ? policy.services : [];
     return controlsRows(services, policy || {}, { allowActions: true, page, backTarget: 'settings', backLabel: 'Back to settings', modeCustomId: 'settings:control-mode', selectPrefix: 'settings-control:select', togglePrefix: 'settings-control-toggle', refreshPrefix: 'settings-controls:refresh', pagePrefix: 'settings-controls:page' });
   }
-  rows.push(...backRow('settings'));
+  rows.push(...deepBackRow('settings', 'Back to settings'));
   return rows.slice(0, 5);
 }
 
@@ -1351,7 +1377,7 @@ export function updateResultEmbed(result) {
 export function updateResultRows() {
   return [new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('updates:back').setLabel('Back to updates').setEmoji('⬅️').setStyle(ButtonStyle.Secondary),
-    backButton('panel'),
+    backButton('panel', 'Back to home'),
   )];
 }
 
@@ -1547,7 +1573,7 @@ export function controlsRows(services, policy = {}, options = {}) {
   const pageCount = Math.max(1, Math.ceil(entries.length / pageSize));
   const page = Math.min(pageCount - 1, Math.max(0, Number(options.page) || 0));
   const backTarget = options.backTarget || 'panel';
-  const backLabel = options.backLabel || (backTarget === 'settings' ? 'Back to settings' : 'Back to panel');
+  const backLabel = options.backLabel || (backTarget === 'settings' ? 'Back to settings' : 'Back to home');
   const selectPrefix = options.selectPrefix || 'control:select';
   const togglePrefix = options.togglePrefix || 'control-toggle';
   const pagePrefix = options.pagePrefix || 'controls:page';
@@ -1556,7 +1582,7 @@ export function controlsRows(services, policy = {}, options = {}) {
       ? (page > 0 ? `control:back:${page + 1}` : 'control:back')
       : (page > 0 ? `control:back:${page + 1}:${backTarget}` : `control:back:${backTarget}`);
     const detailBackLabel = options.detailBackLabel || (backTarget === 'settings' ? backLabel : 'Back to controls');
-    const buttons = [new ButtonBuilder().setCustomId(backId).setLabel(detailBackLabel).setEmoji('⬅️').setStyle(ButtonStyle.Secondary)];
+    const buttons = [new ButtonBuilder().setCustomId(backId).setLabel(detailBackLabel).setEmoji('⬅️').setStyle(ButtonStyle.Secondary), backButton('panel', 'Back to home')];
     if (options.allowActions !== false && !service.protected) {
       const active = service.enabled ?? service.manageable;
       buttons.unshift(new ButtonBuilder().setCustomId(`${togglePrefix}:${service.key}:${active ? 'off' : 'on'}`).setLabel(active ? 'Disable controls' : 'Enable controls').setEmoji(active ? '⏸️' : '✅').setStyle(active ? ButtonStyle.Danger : ButtonStyle.Success));
@@ -1567,6 +1593,7 @@ export function controlsRows(services, policy = {}, options = {}) {
   const pageEntries = entries.slice(pageStart, pageStart + pageSize);
   const refreshPrefix = options.refreshPrefix || 'controls:refresh';
   const navigation = [new ButtonBuilder().setCustomId(`${refreshPrefix}:${page + 1}`).setLabel('Refresh').setEmoji('🔄').setStyle(ButtonStyle.Primary), backButton(backTarget, backLabel)];
+  if (backTarget !== 'panel') navigation.push(backButton('panel', 'Back to home'));
   if (page > 0) navigation.push(new ButtonBuilder().setCustomId(`${pagePrefix}:${page}`).setLabel('Previous').setEmoji('⬅️').setStyle(ButtonStyle.Secondary));
   if (page < pageCount - 1) navigation.push(new ButtonBuilder().setCustomId(`${pagePrefix}:${page + 2}`).setLabel('Next').setEmoji('➡️').setStyle(ButtonStyle.Secondary));
   const rows = [new ActionRowBuilder().addComponents(navigation)];

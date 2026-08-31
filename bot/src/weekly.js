@@ -105,6 +105,26 @@ function hasMajorStableAdvance(current, latest) {
     || (latestParts.major === currentParts.major && latestParts.minor > currentParts.minor);
 }
 
+function hasStableAdvance(current, latest) {
+  const currentParts = releaseParts(current);
+  const latestParts = releaseParts(latest);
+  if (!currentParts || !latestParts || latestParts.suffix || latestParts.prerelease) return false;
+  return compareReleaseVersions(latest, current) > 0;
+}
+
+function hotfixAutoReleaseAllowed(current, latest) {
+  const currentParts = releaseParts(current);
+  const latestParts = releaseParts(latest);
+  return Boolean(currentParts && latestParts)
+    && isHotfixVersion(latest)
+    && !currentParts.prerelease
+    && !latestParts.prerelease
+    && latestParts.major === currentParts.major
+    && latestParts.minor === currentParts.minor
+    && latestParts.patch === currentParts.patch
+    && compareReleaseVersions(latest, current) > 0;
+}
+
 function comparePrerelease(left, right) {
   const leftTokens = String(left || '').split('.');
   const rightTokens = String(right || '').split('.');
@@ -142,24 +162,19 @@ function compareReleaseVersions(left, right) {
   return 0;
 }
 
-function autoReleaseAllowed(release, mode) {
+function autoReleaseAllowed(release, mode, scheduleParts = null) {
   if (!release || !release.update_available || !release.asset_verified || !release.update_supported) return false;
   const latest = release.latest;
   const current = release.current;
   if (!releaseParts(latest) || !releaseParts(current)) return false;
   if (mode === 'hotfix') {
-    const currentParts = releaseParts(current);
-    const latestParts = releaseParts(latest);
-    return isHotfixVersion(latest)
-      && !currentParts.prerelease
-      && !latestParts.prerelease
-      && latestParts.major === currentParts.major
-      && latestParts.minor === currentParts.minor
-      && latestParts.patch === currentParts.patch
-      && compareReleaseVersions(latest, current) > 0;
+    return hotfixAutoReleaseAllowed(current, latest);
   }
   if (mode === 'weekly') {
-    return release.channel === 'stable' && hasMajorStableAdvance(current, latest);
+    // Weekly mode still picks up compact hotfixes during the daily window;
+    // ordinary stable releases wait for the weekly window.
+    return hotfixAutoReleaseAllowed(current, latest)
+      || (scheduleParts?.weekday === 'Sun' && hasStableAdvance(current, latest));
   }
   return mode === 'daily';
 }
@@ -169,12 +184,15 @@ function isAutoWindow(parts, mode, hour = config.autoUpdateHour) {
   if (!['daily', 'weekly', 'hotfix'].includes(mode)) return false;
   if (String(parts.hour).padStart(2, '0') !== String(hour).padStart(2, '0')) return false;
   if (Number(parts.minute) >= 10) return false;
-  return mode !== 'weekly' || parts.weekday === 'Sun';
+  // Weekly mode runs in the same daily window so compact hotfixes can be
+  // installed every day. The release policy below admits ordinary stable
+  // releases only on Sunday.
+  return true;
 }
 
 function betaAutoUpdateAllowed(settings = {}) {
-  // Stable releases remain conservative by default.  Selecting the beta
-  // stream is not enough to authorize unattended live-patch updates: an
+  // Stable releases remain conservative by default. Selecting the beta
+  // channel is not enough to authorize unattended live-patch updates: an
   // administrator must acknowledge the route in /settings first.
   return settings.releaseChannel !== 'beta' || settings.betaAutoUpdateConfirmed === true;
 }
@@ -221,7 +239,7 @@ export async function maybeAutoUpdate(parts = sgtParts()) {
   try {
     const snapshot = await agent.updates(true, settings.releaseChannel);
     const release = snapshot?.bot || {};
-    if (!autoReleaseAllowed(release, mode)) return false;
+    if (!autoReleaseAllowed(release, mode, parts)) return false;
     const key = autoAttemptKey(parts, settings, release);
     if (state.lastAutoAttempt === key || state.lastAutoCompletion === key) return false;
     if (['queued', 'checking', 'downloading', 'verifying', 'staging', 'building', 'restarting', 'verifying_runtime'].includes(String(release.phase || '').toLowerCase())) return false;
@@ -361,9 +379,12 @@ export const weeklyInternals = {
   maybeAutoUpdate,
   maybeRecordAutoUpdateCompletion,
   releaseParts,
+  compareReleaseVersions,
   isHotfixVersion,
   hasMajorStableAdvance,
   autoReleaseAllowed,
   isAutoWindow,
   betaAutoUpdateAllowed,
+  hasStableAdvance,
+  hotfixAutoReleaseAllowed,
 };

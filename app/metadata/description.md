@@ -18,9 +18,10 @@ The Discord bot never receives the Docker socket. A small internal agent perform
 
 Bot release checks are read-only. `/updates` shows a newer release from the
 selected GitHub channel when one is available. Bot installation is manual by
-default; an administrator may explicitly opt into a daily, weekly-stable or
-daily-hotfix schedule in `/settings`. Only the control agent and bot are
-rebuilt, and each replacement must pass health checks before it is reported
-complete.
+default; an administrator may explicitly opt into daily hotfixes, daily checks,
+or weekly checks in `/settings`. Enabled policies check and install verified
+releases: weekly checks install stable releases weekly and compact hotfixes
+daily. Only the control agent and bot are rebuilt, and each replacement must
+pass health checks before it is reported complete.
 
 The app is designed for a custom Runtipi app or a community app store. Set only the integrations you use; discovery handles the rest. Crafty and the Jellyfin + Seerr/Sonarr/Radarr/Prowlarr/qBittorrent shape are the best-tested path; unsupported or absent dashboards stay out of the UI.

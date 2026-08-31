@@ -53,6 +53,21 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertEqual(container["pretty_name"], "Alpine Linux v3.24")
         self.assertEqual(container["source"], "container-os-release")
 
+    def test_host_os_uses_host_pid1_root_when_direct_bind_is_missing(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            host_root = root / "proc" / "1" / "root" / "etc"
+            host_root.mkdir(parents=True)
+            (host_root / "os-release").write_text('ID=ubuntu\nNAME="Ubuntu"\nPRETTY_NAME="Ubuntu Server 24.04.4 LTS"\nVERSION_ID="24.04"\n', encoding="utf-8")
+            with patch.object(self.module, "HOST_OS_RELEASE_FILE", root / "missing"), \
+                    patch.object(self.module, "HOST_PROC", root / "proc"):
+                host = self.module.host_os()
+        self.assertEqual(host["id"], "ubuntu")
+        self.assertEqual(host["pretty_name"], "Ubuntu Server 24.04.4 LTS")
+        self.assertEqual(host["source"], "host-proc-root-os-release")
+
     def test_sanitizes_audit_values(self):
         self.assertEqual(self.module.sanitize_audit_value("Sai\nadmin"), "Sai?admin")
 
@@ -585,6 +600,8 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertIsNone(status["asset_size"])
 
     def test_compact_letter_hotfixes_are_ordered(self):
+        self.assertEqual(self.module._release_version("v0.4.0A"), "0.4.0a")
+        self.assertGreater(self.module._release_version_key("0.4.0a"), self.module._release_version_key("0.4.0"))
         self.assertEqual(self.module._release_version("v0.3.22D"), "0.3.22d")
         self.assertGreater(self.module._release_version_key("0.3.22c"), self.module._release_version_key("0.3.22b"))
         self.assertGreater(self.module._release_version_key("0.3.22b"), self.module._release_version_key("0.3.22"))
@@ -669,13 +686,20 @@ class AgentHelpersTest(unittest.TestCase):
                 patch.object(self.module, "HOMELAB_CONTROL_VERSION", "0.3.22c"), \
                 patch.object(self.module, "BOT_RELEASE_STATUS_FILE", pathlib.Path(directory) / "bot-release.json"), \
                 patch.object(self.module, "_github_release_payload", return_value=releases[0]), \
-                patch.object(self.module, "_github_releases_payload", return_value=releases):
+                patch.object(self.module, "_github_releases_payload", return_value=releases), \
+                patch.object(self.module, "_github_release_policy", return_value={
+                    "schema": 1,
+                    "golden": "0.3.22",
+                    "last_major": "0.3.21",
+                }):
             self.module._bot_release_cache_value = None
             self.module._bot_release_cache_timestamp = 0.0
             status = self.module.bot_release_status(force=True)
-        self.assertEqual([item["version"] for item in status["rollback_options"]], ["0.3.22b", "0.3.22", "0.3.21b"])
+        self.assertEqual([item["version"] for item in status["rollback_options"]], ["0.3.22b", "0.3.22", "0.3.21b", "0.3.21"])
         self.assertNotIn("0.3.20", [item["version"] for item in status["rollback_options"]])
-        self.assertNotIn("0.3.21", [item["version"] for item in status["rollback_options"]])
+        self.assertIn("0.3.21", [item["version"] for item in status["rollback_options"]])
+        self.assertEqual([item["version"] for item in status["rollback_quick_options"]], ["0.3.22", "0.3.21"])
+        self.assertEqual([item["quick_role"] for item in status["rollback_quick_options"]], ["golden", "last_major"])
 
     def test_bot_release_status_keeps_github_rollback_when_latest_check_is_unavailable(self):
         import tempfile

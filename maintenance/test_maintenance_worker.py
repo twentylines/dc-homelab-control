@@ -21,6 +21,8 @@ class MaintenanceWorkerTest(unittest.TestCase):
         self.assertGreater(self.module._release_version_key("0.3.22c"), self.module._release_version_key("0.3.22b"))
         self.assertGreater(self.module._release_version_key("0.4.0-beta.10"), self.module._release_version_key("0.4.0-beta.2"))
         self.assertGreater(self.module._release_version_key("0.4.0"), self.module._release_version_key("0.4.0-rc.1"))
+        self.assertEqual(self.module.bot_version("v0.4.0A"), "0.4.0a")
+        self.assertGreater(self.module._release_version_key("0.4.0a"), self.module._release_version_key("0.4.0"))
         self.assertEqual(self.module.bot_version("v0.3.22B"), "0.3.22b")
         self.assertEqual(self.module.bot_version("v0.3.22D"), "0.3.22d")
         self.assertIsNone(self.module._release_version_key("latest"))

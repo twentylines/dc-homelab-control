@@ -22,8 +22,8 @@ still be filled from that file.
 | `HOMELAB_CONTROL_VERSION` | No | Installed bot release, used for safe version comparison. |
 | `HOMELAB_CONTROL_RELEASE_CHANNEL` | No | `stable` (default) or `beta`; beta includes stable releases and GitHub pre-releases. Automatic beta updates still require an explicit administrator acknowledgement in `/settings`. |
 | `HOMELAB_CONTROL_RELEASE_ASSET` | No | Exact archive filename when a release contains more than one archive. |
-| `HOMELAB_CONTROL_RELEASE_POLICY_URL` | No | Optional HTTPS raw GitHub URL for approved golden/LTS/previous-line rollback metadata. |
-| `HOMELAB_CONTROL_AUTO_UPDATE_MODE` | No | `off` (default), `hotfix`, `daily` or `weekly`; schedules are opt-in from `/settings`, and beta schedules are additionally locked behind the live-patch acknowledgement. |
+| `HOMELAB_CONTROL_RELEASE_POLICY_URL` | No | Optional HTTPS raw GitHub URL for the approved golden and last-major rollback targets. |
+| `HOMELAB_CONTROL_AUTO_UPDATE_MODE` | No | `off` (default), `hotfix`, `daily` or `weekly`; enabled modes check and install verified releases, with weekly stable releases weekly and compact hotfixes daily. Schedules are opt-in from `/settings`, and beta schedules are additionally locked behind the live-patch acknowledgement. |
 | `HOMELAB_CONTROL_AUTO_UPDATE_HOUR` | No | Local hour (0–23, default 4) used by an enabled schedule. |
 | `MEDIA_REQUIRED_PROVIDERS` | No | Explicit media contract, e.g. `jellyfin,seerr,sonarr`. |
 | `MEDIA_STACK_PROFILE` | No | `auto`, `full`, `minimal`, or `none`. |
@@ -68,12 +68,13 @@ For `/updates` bot rollback, the agent first reports a retained local image
 pair when one exists. It also checks the configured public GitHub repository
 for up to 25 earlier stable releases with exactly one source archive and a
 GitHub SHA-256 digest. The administrator sees adaptive source-archive download
-sizes in the rollback-options view and can choose a recommended release line
-or an exact version from the selector. The root bridge re-validates the
+sizes in the rollback-options view and can choose the approved golden target,
+last major release or retained legacy version, or select an exact legacy
+version manually. The root bridge re-validates the
 repository, tag,
 download path, archive layout and digest before rebuilding only the control
-agent and bot. The public `release-policy.json` file can mark golden, LTS and
-previous-major-line versions; it is advisory metadata only and the exact
+agent and bot. The public `release-policy.json` file can mark the approved
+golden and last-major versions; it is advisory metadata only and the exact
 release archive and digest are still checked by the bridge. A release policy
 does not enable self-updates.
 

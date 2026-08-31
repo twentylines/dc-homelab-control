@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0a - 2026-08-31
+
+1. Fixed host operating-system detection when the direct host bind is missing;
+   the host identity can now be recovered through the mounted host process
+   root without confusing it with the control-container image.
+2. Narrowed rollback quick actions to the approved golden target and last major
+   release, while retaining the local legacy image fallback. Other verified
+   GitHub history remains available through the clearly labelled legacy
+   selector and is marked as not recommended for routine use.
+3. Added direct **Back to home** navigation beside parent-route buttons across
+   deep detail, confirmation, result and error views, and clarified automatic
+   update policies as check-and-install schedules.
+4. Completed compact letter hotfix handling for `a` through `z`, including
+   case-insensitive parsing, ordering and explicit `0.4.0a` coverage. The
+   `0.4.0a` tag is published as a stable-channel hotfix.
+
 ## 0.4.0 - 2026-08-31
 
 1. Added a persisted `/settings` area for access identities, release streams,

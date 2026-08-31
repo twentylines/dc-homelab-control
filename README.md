@@ -15,7 +15,7 @@ homelab without carrying those private names into the code or UI.
 
 ## Tested reference setup
 
-The reference deployment used for the 0.4.0 release-candidate checks is Ubuntu
+The reference deployment used for the 0.4.0a hotfix checks is Ubuntu
 Server 24.04 LTS on amd64 with Docker managed by Runtipi, a Jellyfin/Seerr
 media stack (including Sonarr, Radarr, Prowlarr and qBittorrent), Crafty
 Controller for Minecraft, and supporting AdGuard Home, Beszel, Scrutiny,
@@ -55,8 +55,10 @@ the UI reports that container identity separately from the Ubuntu host.
   a small row for available app, host and bot updates. It is separate from the
   detailed `/report` command.
 - GitHub release checks for the bot itself. Checks are read-only and bot
-  self-updates are off by default; an administrator may opt into a daily,
-  weekly-stable or daily-hotfix schedule from `/settings`.
+  self-updates are off by default; an administrator may opt into daily hotfixes,
+  daily checks, or weekly checks from `/settings`. Enabled schedules check and
+  install verified releases; the weekly policy installs stable releases weekly
+  and compact hotfixes daily.
 - Wake-on-LAN for arbitrary trusted devices with saved favourites.
 - Administrator and guest whitelists. Service controls are opt-out by default:
   detected containers are visible and controllable after administrator
@@ -121,14 +123,17 @@ is the complete path from a fresh homelab to a tested public release:
    reports the measured latency, and keeps the previous pair for rollback.
    `/updates` shows the source-archive download size in adaptive units (the
    built image size is separate) and opens a
-   rollback-options view with recommended release lines plus the complete
-   verified history available from GitHub. When those local images have been
+   rollback-options view with only the approved golden target, last major
+   release and retained local version as quick choices. The manual selector
+   still exposes verified GitHub history for exceptional recovery; every other
+   older release is legacy and not recommended. When local images have been
    pruned, choosing a version fetches that exact release. It never accepts an
    arbitrary tag or an unverified download.
    Bot self-updates remain off unless an administrator chooses a mode in
-   `/settings`. `hotfix` checks compact letter releases such as `0.4.0a` daily;
-   `daily` checks the selected stream every day; `weekly` checks stable major
-   lines on Sunday. The beta stream includes both stable releases and
+   `/settings`. `hotfix` checks and installs compact letter releases such as
+   `0.4.0a` daily; `daily` checks and installs stable releases and hotfixes every
+   day; `weekly` checks and installs stable releases weekly while checking and
+   installing hotfixes daily. The beta channel includes both stable releases and
    pre-releases, but its automatic route is locked until an administrator
    explicitly acknowledges the **beta live-patch route** in `/settings →
    Updates`. Selecting beta never silently enables unattended updates; revoking
@@ -231,8 +236,9 @@ Compose file, optional Compose environment file and project name. The bridge
 builds and recreates only the `agent` and `bot` services, retains the previous
 images, verifies both health checks, and automatically restores the previous
 images if the new release is not healthy. `/updates` exposes **Rollback
-options**, with recommended previous release lines and a selector populated
-from GitHub's verified release archives. Selecting a version stages a separate
+options**, with the approved golden target, last major release and retained
+legacy version as quick choices, plus a selector populated from GitHub's
+verified release archives for exceptional recovery. Selecting a version stages a separate
 administrator confirmation; the agent resolves the version to its exact tag,
 archive URL and digest, and the bridge validates them again before downloading
 and building. A retained local image pair remains available as a fallback.
@@ -269,8 +275,10 @@ root-owned files and the bridge configuration private.
   and superuser lists. Runtime changes are stored in the private bot data
   volume, not in the public config or release archive.
 - `HOMELAB_CONTROL_AUTO_UPDATE_MODE=off` is the safe default. Use `/settings`
-  to choose `hotfix`, `daily` or `weekly` after reviewing the release stream
-  and backup path. `HOMELAB_CONTROL_AUTO_UPDATE_HOUR` selects the local hour.
+  to choose daily hotfixes, daily checks, or weekly checks after reviewing the
+  release channel and backup path. Enabled modes check and install verified
+  releases; weekly checks install stable releases weekly and hotfixes daily.
+  `HOMELAB_CONTROL_AUTO_UPDATE_HOUR` selects the local hour.
   Beta automatic updates have an additional administrator-only acknowledgement
   step for the live-patch route; without it, the scheduler remains manual even
   if an older environment setting requested a schedule.
