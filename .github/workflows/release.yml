@@ -94,8 +94,10 @@ jobs:
           text_checks = {
               "agent/agent.py": (Path("agent/agent.py").read_text(), f'os.getenv("HOMELAB_CONTROL_VERSION", "{version}").strip() or "{version}"'),
               "config.example.env": (Path("config.example.env").read_text(), f"HOMELAB_CONTROL_VERSION={version}"),
-              "compose.local.yml": (Path("compose.local.yml").read_text(), f"HOMELAB_CONTROL_VERSION: ${{HOMELAB_CONTROL_VERSION:-{version}}}"),
-              "app/docker-compose.yml": (Path("app/docker-compose.yml").read_text(), f"HOMELAB_CONTROL_VERSION: ${{HOMELAB_CONTROL_VERSION:-{version}}}"),
+              # Build the Compose literal in pieces so GitHub Actions does not
+              # mistake it for its own expression syntax.
+              "compose.local.yml": (Path("compose.local.yml").read_text(), f"HOMELAB_CONTROL_VERSION: " + "$" + "{HOMELAB_CONTROL_VERSION:-" + version + "}"),
+              "app/docker-compose.yml": (Path("app/docker-compose.yml").read_text(), f"HOMELAB_CONTROL_VERSION: " + "$" + "{HOMELAB_CONTROL_VERSION:-" + version + "}"),
           }
           for path, (contents, expected) in text_checks.items():
               if expected not in contents:
