@@ -24,6 +24,7 @@
       before enabling updates or reboots.
 - [ ] Verify `/updates` bot rollback first with retained images, then with the
       local pair removed so the exact earlier GitHub archive is fetched,
-      checksum-verified, built and health-checked.
+      checksum-verified, built and health-checked; confirm adaptive archive
+      sizes appear for the latest update and rollback choices.
 - [ ] Submit to a community or own Runtipi app store only after the public
       repository and image signatures are available.

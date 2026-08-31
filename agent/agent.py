@@ -93,7 +93,7 @@ RUNTIPI_UPDATE_ALL_TIMEOUT = max(120, min(780, int(os.getenv("RUNTIPI_UPDATE_ALL
 RUNTIPI_PROTECTED_APP_IDS = {"homelab-control", "hades-control", "backend", "runtipi"}
 CONTROL_BOT_NAME = os.getenv("CONTROL_BOT_NAME", "Homelab Control").strip() or "Homelab Control"
 HOMELAB_CONTROL_REPOSITORY = os.getenv("HOMELAB_CONTROL_REPOSITORY", "").strip()
-HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.3.22b").strip() or "0.3.22b"
+HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.3.22c").strip() or "0.3.22c"
 HOMELAB_CONTROL_RELEASE_CHANNEL = os.getenv("HOMELAB_CONTROL_RELEASE_CHANNEL", "stable").strip().lower() or "stable"
 HOMELAB_CONTROL_RELEASE_ASSET = os.getenv("HOMELAB_CONTROL_RELEASE_ASSET", "").strip()
 BOT_RELEASE_STATUS_FILE = MAINTENANCE_DIR / "bot-release.json"
@@ -2486,7 +2486,7 @@ def runtipi_updates(force=False):
     return json.loads(json.dumps(result))
 
 
-_RELEASE_RE = re.compile(r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:(b)|-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$", re.IGNORECASE)
+_RELEASE_RE = re.compile(r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:(?P<hotfix>[a-z])|-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$", re.IGNORECASE)
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100}$")
 _SHA256_RE = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
 
@@ -2494,16 +2494,17 @@ _SHA256_RE = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
 def _release_version(value):
     """Return a normalised release version or None for an unsafe tag.
 
-    ``0.3.22b`` is accepted as the project's compact hotfix notation.  It is
-    deliberately limited to the single ``b`` suffix; ordinary releases and
-    hyphenated pre-releases keep their normal semantic-version spelling.
+    ``0.3.22b`` (and later ``c``, ``d`` … letter suffixes) is accepted as the
+    project's compact hotfix notation.  The suffix is deliberately limited to
+    one ASCII letter; ordinary releases and hyphenated pre-releases keep their
+    normal semantic-version spelling.
     """
     match = _RELEASE_RE.fullmatch(str(value or "").strip())
     if not match:
         return None
     major, minor, patch, hotfix, prerelease = match.groups()
     if hotfix:
-        return f"{major}.{minor}.{patch}b"
+        return f"{major}.{minor}.{patch}{hotfix.lower()}"
     return f"{major}.{minor}.{patch}{f'-{prerelease}' if prerelease else ''}"
 
 
@@ -2512,11 +2513,12 @@ def _release_version_key(value):
     normalised = _release_version(value)
     if not normalised:
         return None
-    if normalised.lower().endswith("b") and "-" not in normalised:
+    if re.fullmatch(r"\d+\.\d+\.\d+[a-z]", normalised, re.IGNORECASE):
         base = normalised[:-1]
         numbers = tuple(int(part) for part in base.split("."))
-        # The compact b hotfix is published after the matching stable patch.
-        return (*numbers, 2, "b")
+        # Compact letter hotfixes are published after the matching stable
+        # patch and are ordered alphabetically (…a, …b, …c).
+        return (*numbers, 2, normalised[-1].lower())
     base, _, prerelease = normalised.partition("-")
     numbers = tuple(int(part) for part in base.split("."))
     # Stable releases are newer than a pre-release of the same version.  The
@@ -2574,13 +2576,14 @@ def _github_releases_payload(repository):
     return [entry for entry in payload if isinstance(entry, dict)]
 
 
-def _github_previous_release(repository, current):
-    """Find the highest earlier stable release with one verified archive."""
+def _github_rollback_options(repository, current):
+    """Return bounded, newest-first earlier releases with verified archives."""
     current_key = _release_version_key(current)
     if not current_key:
-        return None, "The installed bot version is not a safe semantic version"
+        return [], "The installed bot version is not a safe semantic version"
     releases = _github_releases_payload(repository)
     candidates = []
+    seen_versions = set()
     for release in releases:
         if release.get("draft"):
             continue
@@ -2590,9 +2593,12 @@ def _github_previous_release(repository, current):
         version_key = _release_version_key(version)
         if not version or not version_key or version_key >= current_key:
             continue
+        if version in seen_versions:
+            continue
         asset, detail = _release_archive_asset(release)
         if not asset or not asset.get("digest"):
             continue
+        seen_versions.add(version)
         candidates.append((version_key, {
             "version": version,
             "tag": str(release.get("tag_name") or "")[:120],
@@ -2601,19 +2607,28 @@ def _github_previous_release(repository, current):
             "asset_name": asset.get("name"),
             "asset_url": asset.get("url"),
             "asset_digest": asset.get("digest"),
+            "asset_size": asset.get("size"),
         }))
     if not candidates:
-        return None, "No earlier GitHub release with a verified source archive was found"
+        return [], "No earlier GitHub release with a verified source archive was found"
     candidates.sort(key=lambda item: item[0], reverse=True)
-    return candidates[0][1], None
+    return [candidate for _key, candidate in candidates[:25]], None
+
+
+def _github_previous_release(repository, current):
+    """Find the newest earlier stable release with one verified archive."""
+    options, detail = _github_rollback_options(repository, current)
+    return (options[0] if options else None), detail
 
 
 def _github_rollback_fields(repository, current, local_available=False, local_version=None):
     """Build rollback fields without coupling them to the latest-release check."""
     try:
-        previous, detail = _github_previous_release(repository, current)
+        options, detail = _github_rollback_options(repository, current)
+        previous = options[0] if options else None
     except (OSError, urllib.error.URLError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
-        previous, detail = None, f"Previous GitHub releases could not be checked ({exc.__class__.__name__})"
+        options, previous = [], None
+        detail = f"Previous GitHub releases could not be checked ({exc.__class__.__name__})"
     return {
         "rollback_available": bool(local_available or previous),
         "rollback_source": "local" if local_available else "github" if previous else None,
@@ -2621,6 +2636,8 @@ def _github_rollback_fields(repository, current, local_available=False, local_ve
         "github_rollback_available": bool(previous),
         "github_rollback_version": previous.get("version") if previous else None,
         "github_rollback": previous,
+        "rollback_options": options,
+        "github_rollback_options": options,
         "rollback_detail": detail,
         "github_rollback_detail": detail,
     }
@@ -2645,11 +2662,21 @@ def _release_archive_asset(payload):
     asset = candidates[0]
     digest = str(asset.get("digest") or "").strip().lower()
     if not _SHA256_RE.fullmatch(digest):
-        return {"name": str(asset.get("name") or "")[:180], "url": str(asset.get("browser_download_url") or "")[:500], "digest": None}, "GitHub did not provide a SHA-256 asset digest; update is blocked until the release is rebuilt with a checksum"
+        return {"name": str(asset.get("name") or "")[:180], "url": str(asset.get("browser_download_url") or "")[:500], "digest": None, "size": None}, "GitHub did not provide a SHA-256 asset digest; update is blocked until the release is rebuilt with a checksum"
     url = str(asset.get("browser_download_url") or "").strip()
     if not url.startswith("https://github.com/"):
         return None, "The release archive URL is not a GitHub download URL"
-    return {"name": str(asset.get("name") or "")[:180], "url": url[:500], "digest": digest}, None
+    size = asset.get("size")
+    if isinstance(size, bool):
+        size = None
+    else:
+        try:
+            size = int(size)
+            if size < 0:
+                size = None
+        except (TypeError, ValueError):
+            size = None
+    return {"name": str(asset.get("name") or "")[:180], "url": url[:500], "digest": digest, "size": size}, None
 
 
 def _release_notes(payload):
@@ -2699,6 +2726,8 @@ def bot_release_status(force=False):
         "github_rollback_available": False,
         "github_rollback_version": None,
         "github_rollback": None,
+        "rollback_options": [],
+        "github_rollback_options": [],
         "phase": state.get("phase", "idle"),
         "job_id": state.get("job_id"),
         "requested_version": state.get("requested_version"),
@@ -2744,6 +2773,7 @@ def bot_release_status(force=False):
             "asset_name": asset.get("name") if asset else None,
             "asset_url": asset.get("url") if asset else None,
             "asset_digest": asset.get("digest") if asset else None,
+            "asset_size": asset.get("size") if asset else None,
             **rollback_fields,
             "detail": asset_detail or ("A newer verified release is ready" if update_available else "This installation is on the latest stable release"),
         }
@@ -3242,7 +3272,7 @@ def _queue_system_request(action: str, actor_id: str, actor_name: str, job_id: s
     }
 
 
-def _queue_bot_release_request(action: str, actor_id: str, actor_name: str):
+def _queue_bot_release_request(action: str, actor_id: str, actor_name: str, selected_version=None):
     """Queue one guarded bot release action for the root-owned host bridge."""
     if action not in {"bot_update", "bot_rollback"}:
         raise ValueError("Unsupported bot release action")
@@ -3283,6 +3313,24 @@ def _queue_bot_release_request(action: str, actor_id: str, actor_name: str):
             raise RuntimeError("No previous bot release is available to roll back to")
         if not snapshot.get("update_supported"):
             raise RuntimeError("The host release bridge is installed but its Compose deployment target is not configured")
+        selected = None
+        if selected_version is not None and str(selected_version).strip():
+            wanted = _release_version(str(selected_version).strip())
+            if not wanted:
+                raise ValueError("The selected rollback version is not a safe semantic version")
+            options = snapshot.get("rollback_options") if isinstance(snapshot.get("rollback_options"), list) else []
+            selected = next(
+                (option for option in options if isinstance(option, dict) and _release_version(option.get("version")) == wanted),
+                None,
+            )
+            if selected is None:
+                local_version = _release_version(snapshot.get("rollback_version"))
+                if snapshot.get("rollback_source") == "local" and local_version == wanted:
+                    # A retained image pair has no GitHub metadata to pass;
+                    # the root bridge will use that exact local version.
+                    selected = {"version": local_version, "local": True}
+            if selected is None:
+                raise RuntimeError("That rollback version is no longer available; refresh the rollback options")
         request = {
             "schema": 1,
             "action": action,
@@ -3292,12 +3340,20 @@ def _queue_bot_release_request(action: str, actor_id: str, actor_name: str):
             "actor_name": sanitize_audit_value(actor_name),
             "requested_at": datetime.now(timezone.utc).isoformat(),
         }
+        if selected:
+            request["selected_version"] = selected.get("version")
         # A local image pair is preferred. When it is unavailable, pass the
-        # exact earlier GitHub release metadata selected by the agent; the
+        # exact earlier GitHub release metadata selected by the agent. The
         # root bridge validates the repository, tag, URL and digest again
-        # before downloading anything.
-        if snapshot.get("github_rollback_available"):
+        # before downloading anything. An explicit selection bypasses a
+        # retained-image shortcut so the requested older version is honoured.
+        if selected and not selected.get("local"):
+            rollback = selected
+        elif snapshot.get("github_rollback_available"):
             rollback = snapshot.get("github_rollback") if isinstance(snapshot.get("github_rollback"), dict) else {}
+        else:
+            rollback = {}
+        if isinstance(rollback, dict) and rollback.get("asset_url"):
             request.update({
                 "repository": snapshot.get("repository"),
                 "tag": rollback.get("tag"),
@@ -3512,10 +3568,15 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path in {"/v1/bot-release/update", "/v1/bot-release/rollback"}:
             try:
                 action = "bot_update" if parsed.path.endswith("/update") else "bot_rollback"
+                body = self.json_body()
+                selected_version = body.get("selected_version")
+                if selected_version is not None and not isinstance(selected_version, str):
+                    raise ValueError("selected_version must be a string")
                 result = _queue_bot_release_request(
                     action,
                     self.headers.get("X-Discord-User-ID", "unknown"),
                     self.headers.get("X-Discord-User-Name", "unknown"),
+                    selected_version,
                 )
                 self.send_json(200, {"ok": True, "data": result})
             except PermissionError as exc:

@@ -79,11 +79,12 @@ the project name used by `docker compose`. The maintenance directory in this
 file must be the same host directory mounted read-write at `/host/maintenance`
 in the agent. The bridge validates the repository and exact GitHub asset URL,
 verifies the digest, checks the archive contents, rebuilds only `agent` and
-`bot`, waits for both health checks, and keeps the prior images for rollback. If
-those images have been pruned, `/updates` supplies the highest earlier stable
-release with a verified GitHub archive; the bridge validates that metadata
-again before it downloads anything. It never updates other containers and
-never restarts the host.
+`bot`, waits for both health checks, and keeps the prior images for rollback.
+`/updates` shows each verified source-archive download size in adaptive units
+(the built image size is separate) and lets an administrator choose from the
+available GitHub history when a specific rollback is needed. The bridge
+validates that exact metadata again before it downloads anything. It never
+updates other containers and never restarts the host.
 
 ## 4. Validate, then start
 

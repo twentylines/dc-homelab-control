@@ -512,6 +512,7 @@ class AgentHelpersTest(unittest.TestCase):
                         "name": "homelab-control-0.3.18.tar.gz",
                         "browser_download_url": "https://github.com/example/homelab-control/releases/download/v0.3.18/homelab-control-0.3.18.tar.gz",
                         "digest": "sha256:" + "b" * 64,
+                        "size": 987654,
                     }],
                 }):
             self.module._bot_release_cache_value = None
@@ -523,6 +524,7 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertEqual(status["latest"], "0.3.18")
         self.assertTrue(status["update_available"])
         self.assertTrue(status["asset_verified"])
+        self.assertEqual(status["asset_size"], 987654)
         self.assertIn("Safer restart hand-off", status["release_notes"])
         self.assertNotIn("do-not-forward", status["release_notes"])
 
@@ -550,6 +552,12 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertEqual(status["latest"], "0.3.22b")
         self.assertTrue(status["update_available"])
         self.assertIn("Changelog is visible", status["release_notes"])
+        self.assertIsNone(status["asset_size"])
+
+    def test_compact_letter_hotfixes_are_ordered(self):
+        self.assertEqual(self.module._release_version("v0.3.22D"), "0.3.22d")
+        self.assertGreater(self.module._release_version_key("0.3.22c"), self.module._release_version_key("0.3.22b"))
+        self.assertGreater(self.module._release_version_key("0.3.22b"), self.module._release_version_key("0.3.22"))
 
     def test_bot_release_status_discovers_verified_previous_github_release(self):
         import tempfile
@@ -559,6 +567,7 @@ class AgentHelpersTest(unittest.TestCase):
                 "name": f"homelab-control-{version}.tar.gz",
                 "browser_download_url": f"https://github.com/example/homelab-control/releases/download/v{version}/homelab-control-{version}.tar.gz",
                 "digest": "sha256:" + ("c" if version == "0.3.18" else "d") * 64,
+                "size": 1234567 if version == "0.3.18" else 2345678,
             }
 
         releases = [
@@ -580,6 +589,32 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertEqual(status["rollback_version"], "0.3.18")
         self.assertTrue(status["github_rollback_available"])
         self.assertEqual(status["github_rollback"]["asset_digest"], "sha256:" + "c" * 64)
+        self.assertEqual([item["version"] for item in status["rollback_options"]], ["0.3.18", "0.3.17"])
+        self.assertEqual(status["rollback_options"][0]["asset_size"], 1234567)
+
+    def test_bot_release_status_limits_rollback_history_to_verified_archives(self):
+        import tempfile
+
+        def release(version, digest=None):
+            asset = {
+                "name": f"homelab-control-{version}.tar.gz",
+                "browser_download_url": f"https://github.com/example/homelab-control/releases/download/v{version}/homelab-control-{version}.tar.gz",
+                "digest": digest or "sha256:" + "a" * 64,
+                "size": 4567890,
+            }
+            return {"tag_name": f"v{version}", "prerelease": False, "assets": [asset]}
+
+        releases = [release("0.3.22c"), release("0.3.22b"), release("0.3.22"), release("0.3.21"), release("0.3.20", "sha256:not-a-digest")]
+        with tempfile.TemporaryDirectory() as directory, patch.object(self.module, "HOMELAB_CONTROL_REPOSITORY", "example/homelab-control"), \
+                patch.object(self.module, "HOMELAB_CONTROL_VERSION", "0.3.22c"), \
+                patch.object(self.module, "BOT_RELEASE_STATUS_FILE", pathlib.Path(directory) / "bot-release.json"), \
+                patch.object(self.module, "_github_release_payload", return_value=releases[0]), \
+                patch.object(self.module, "_github_releases_payload", return_value=releases):
+            self.module._bot_release_cache_value = None
+            self.module._bot_release_cache_timestamp = 0.0
+            status = self.module.bot_release_status(force=True)
+        self.assertEqual([item["version"] for item in status["rollback_options"]], ["0.3.22b", "0.3.22", "0.3.21"])
+        self.assertNotIn("0.3.20", [item["version"] for item in status["rollback_options"]])
 
     def test_bot_release_status_keeps_github_rollback_when_latest_check_is_unavailable(self):
         import tempfile
@@ -605,6 +640,41 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertTrue(status["rollback_available"])
         self.assertEqual(status["rollback_source"], "github")
         self.assertEqual(status["rollback_version"], "0.3.18")
+
+    def test_selected_rollback_queues_the_exact_github_option(self):
+        import tempfile
+
+        selected = {
+            "version": "0.3.17",
+            "tag": "v0.3.17",
+            "asset_name": "homelab-control-0.3.17.tar.gz",
+            "asset_url": "https://github.com/example/homelab-control/releases/download/v0.3.17/homelab-control-0.3.17.tar.gz",
+            "asset_digest": "sha256:" + "f" * 64,
+        }
+        snapshot = {
+            "phase": "idle",
+            "configured": True,
+            "update_supported": True,
+            "rollback_available": True,
+            "rollback_source": "github",
+            "rollback_options": [selected, {**selected, "version": "0.3.16", "tag": "v0.3.16"}],
+            "github_rollback_available": True,
+            "github_rollback": selected,
+            "repository": "example/homelab-control",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            writes = []
+            with patch.object(self.module, "MAINTENANCE_DIR", root), \
+                    patch.object(self.module, "SYSTEM_REQUEST_FILE", root / "request.json"), \
+                    patch.object(self.module, "bot_release_status", return_value=snapshot), \
+                    patch.object(self.module, "_write_maintenance_request", side_effect=lambda request: writes.append(dict(request))), \
+                    patch.object(self.module, "append_audit"):
+                result = self.module._queue_bot_release_request("bot_rollback", "123", "Sai", "0.3.17")
+        self.assertEqual(result["version"], "0.3.17")
+        self.assertEqual(writes[0]["selected_version"], "0.3.17")
+        self.assertEqual(writes[0]["asset_url"], selected["asset_url"])
+        self.assertEqual(writes[0]["asset_digest"], selected["asset_digest"])
 
     def test_jellyfin_preferred_user_scope_uses_administrator_without_exposing_it(self):
         users = [

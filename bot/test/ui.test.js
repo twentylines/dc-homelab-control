@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { actionLoadingEmbed, bar, base, botReleaseLoadingEmbed, botReleaseRestartEmbed, botReleaseResultEmbed, botReleaseSummary, botUpdateConfirmationEmbed, bytes, controlsEmbed, controlsRows, duration, healthEmbed, helpEmbed, hostUpdateSummary, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, networkEmbed, operatingSystemLabel, operatingSystemShortLabel, panelEmbed, pingEmbed, reportEmbeds, serviceRows, servicesEmbed, statusEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows } from '../src/ui.js';
+import { actionLoadingEmbed, bar, base, botReleaseLoadingEmbed, botReleaseRestartEmbed, botReleaseResultEmbed, botReleaseSummary, botRollbackConfirmationEmbed, botRollbackOptionsEmbed, botRollbackOptionsRows, botUpdateConfirmationEmbed, bytes, controlsEmbed, controlsRows, duration, healthEmbed, helpEmbed, hostUpdateSummary, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, networkEmbed, operatingSystemLabel, operatingSystemShortLabel, panelEmbed, pingEmbed, reportEmbeds, serviceRows, servicesEmbed, statusEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows } from '../src/ui.js';
 import { minecraftInternals } from '../src/minecraft.js';
 
 const sampleStatus = {
@@ -47,6 +47,12 @@ test('shows host and control-container operating systems separately', () => {
   });
   assert.match(update, /Host OS.*Ubuntu Server 24\.04\.4 LTS/);
   assert.match(update, /Control container.*Alpine Linux v3\.24/);
+  const unavailable = updatesEmbed(
+    { available: true, updates: [], protected_updates: [] },
+    { available: false, os: { id: 'unknown', name: 'Host OS unavailable', pretty_name: 'Host OS unavailable' }, detail: 'Host OS unavailable' },
+  ).toJSON();
+  assert.equal(unavailable.fields.find((field) => field.value.includes('Host OS unavailable')).name, '🖥️ Host updates');
+  assert.doesNotMatch(unavailable.fields.find((field) => field.value.includes('Host OS unavailable')).name, /Host host/i);
 });
 
 test('shared footer keeps operational notes compact and consistent', () => {
@@ -268,6 +274,7 @@ test('bot release UI reports GitHub checks and exposes guarded update and rollba
       repository: 'example/homelab-control',
       current: '0.3.17',
       latest: '0.3.18',
+      asset_size: 12345678,
       update_available: true,
       asset_verified: true,
       update_supported: true,
@@ -275,6 +282,11 @@ test('bot release UI reports GitHub checks and exposes guarded update and rollba
       rollback_source: 'github',
       rollback_version: '0.3.16',
       github_rollback_available: true,
+      rollback_options: [
+        { version: '0.3.16', published_at: '2026-08-20T00:00:00Z', asset_digest: 'sha256:' + 'a'.repeat(64), asset_size: 2345678 },
+        { version: '0.3.15', published_at: '2026-08-10T00:00:00Z', asset_digest: 'sha256:' + 'b'.repeat(64), asset_size: 3456789 },
+        { version: '0.2.9', published_at: '2026-07-10T00:00:00Z', asset_digest: 'sha256:' + 'c'.repeat(64), asset_size: 4567890 },
+      ],
       phase: 'idle',
       detail: 'A newer verified release is ready',
     },
@@ -285,19 +297,35 @@ test('bot release UI reports GitHub checks and exposes guarded update and rollba
   assert.match(releaseField.value, /0\.3\.17/);
   assert.match(releaseField.value, /0\.3\.18/);
   assert.match(botReleaseSummary(snapshot.bot), /Verified archive ready to install/);
+  assert.match(botReleaseSummary(snapshot.bot), /12\.3 MB/);
+  assert.match(botUpdateConfirmationEmbed({ latest: '0.3.18', asset_size: 1024 }).toJSON().description, /1 KB/);
+  assert.doesNotMatch(botReleaseSummary({ ...snapshot.bot, asset_size: null }), /Source archive ·/);
   assert.match(botReleaseSummary(snapshot.bot), /from GitHub/);
   assert.match(botReleaseSummary(snapshot.bot), /Manual update only/);
-  assert.match(botReleaseSummary({ ...snapshot.bot, available: false, detail: 'GitHub latest unavailable' }), /Revert available/);
+  assert.match(botReleaseSummary({ ...snapshot.bot, available: false, detail: 'GitHub latest unavailable' }), /Rollback options/);
   const rows = updatesRows(snapshot, true);
   assert.ok(rows.length <= 5);
   const rowIds = rows.flatMap((row) => row.toJSON().components.map((component) => component.custom_id));
   assert.ok(rowIds.includes('updates:bot-update'));
-  assert.ok(rowIds.includes('updates:bot-rollback'));
-  const rollbackButton = rows.flatMap((row) => row.toJSON().components).find((component) => component.custom_id === 'updates:bot-rollback');
-  assert.equal(rollbackButton.label, 'Revert to v0.3.16');
-  const prefixedRows = updatesRows({ ...snapshot, bot: { ...snapshot.bot, rollback_version: 'v0.3.16' } }, true);
-  const prefixedRollbackButton = prefixedRows.flatMap((row) => row.toJSON().components).find((component) => component.custom_id === 'updates:bot-rollback');
-  assert.equal(prefixedRollbackButton.label, 'Revert to v0.3.16');
+  assert.ok(rowIds.includes('updates:bot-rollback-options'));
+  const rollbackButton = rows.flatMap((row) => row.toJSON().components).find((component) => component.custom_id === 'updates:bot-rollback-options');
+  assert.equal(rollbackButton.label, 'Rollback options');
+  const optionRows = botRollbackOptionsRows(snapshot.bot).map((row) => row.toJSON());
+  assert.ok(optionRows.flatMap((row) => row.components).some((component) => component.custom_id === 'updates:bot-rollback-select'));
+  assert.ok(optionRows.flatMap((row) => row.components).some((component) => component.custom_id === 'updates:bot-rollback-version:0.2.9'));
+  const optionsEmbed = botRollbackOptionsEmbed(snapshot.bot).toJSON();
+  assert.match(optionsEmbed.title, /rollback options/i);
+  assert.match(optionsEmbed.description, /much older releases is not recommended/i);
+  assert.match(optionsEmbed.fields.find((field) => field.name === 'Recommended previous releases').value, /0\.2\.9/);
+  assert.match(optionsEmbed.fields.find((field) => field.name === 'Recommended previous releases').value, /4\.6 MB/);
+  assert.match(botRollbackOptionsEmbed({ ...snapshot.bot, rollback_options: [{ version: '0.3.16', asset_size: 1000000000 }] }).toJSON().fields[0].value, /1 GB/);
+  assert.match(botRollbackOptionsEmbed({ ...snapshot.bot, rollback_options: [{ version: '0.3.16', asset_size: null }] }).toJSON().fields[0].value, /size unavailable/);
+  const rollbackConfirmation = botRollbackConfirmationEmbed(snapshot.bot, { version: '0.2.9' }).toJSON();
+  assert.match(rollbackConfirmation.description, /0\.2\.9/);
+  assert.match(rollbackConfirmation.description, /much older releases is not recommended/i);
+  const retainedRows = botRollbackOptionsRows({ ...snapshot.bot, rollback_source: 'local', rollback_version: '0.3.17' }).flatMap((row) => row.toJSON().components);
+  assert.ok(retainedRows.some((component) => component.custom_id === 'updates:bot-rollback-retained'));
+  assert.equal(botRollbackConfirmationEmbed({ rollback_version: null }, { local: true }).toJSON().description.includes('retained previous release'), true);
   const loading = botReleaseLoadingEmbed('update', { phase: 'downloading', latest: '0.3.18', events: [{ message: 'Downloading the verified GitHub release archive' }] }, 2).toJSON();
   assert.match(loading.description, /Downloading the release archive/);
   assert.match(loading.description, /both control containers answer their health checks/);

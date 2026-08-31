@@ -335,19 +335,172 @@ function safeReleaseNotes(value) {
   return cleaned ? cleaned.slice(0, 980) : 'No release notes were published for this version.';
 }
 
+function releaseSizeBytes(value) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  }
+  if (typeof value !== 'string' || !/^\d+(?:\.\d+)?$/.test(value.trim())) return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function releaseSizeLabel(value) {
+  const number = releaseSizeBytes(value);
+  if (number === null) return 'size unavailable';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let amount = number;
+  let unit = 0;
+  while (amount >= 1000 && unit < units.length - 1) {
+    amount /= 1000;
+    unit += 1;
+  }
+  const rounded = unit === 0 || amount >= 100
+    ? Math.round(amount)
+    : Math.round(amount * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)} ${units[unit]}`;
+}
+
 export function botUpdateConfirmationEmbed(release) {
   const version = safeUpdateText(release?.latest || 'selected release', 60);
+  const size = releaseSizeBytes(release?.asset_size) !== null ? `\nSource archive size · **${releaseSizeLabel(release.asset_size)}**` : '';
   return base(
     'Confirm Homelab Control update',
-    `Install the verified GitHub release **${version}**?\n\nOnly the control agent and Discord bot images will be rebuilt. Other containers and their data remain online. The previous control images are retained if runtime verification fails.`,
+    `Install the verified GitHub release **${version}**?${size}\n\nOnly the control agent and Discord bot images will be rebuilt. Other containers and their data remain online. The previous control images are retained if runtime verification fails.`,
     'Manual administrator confirmation · no automatic bot updates',
   ).setColor(colors.warn).addFields({ name: `What changed in ${version}`, value: safeReleaseNotes(release?.release_notes), inline: false });
 }
 
-function rollbackActionLabel(version) {
-  if (!version) return 'Revert version';
-  const cleanVersion = safeUpdateText(version, 20).replace(/^v/i, '');
-  return cleanVersion && cleanVersion !== 'Unknown' ? `Revert to v${cleanVersion}` : 'Revert version';
+function rollbackVersion(value) {
+  const cleaned = safeUpdateText(value, 32).replace(/^v/i, '').toLowerCase();
+  return cleaned && cleaned !== 'unknown' ? cleaned : '';
+}
+
+function rollbackButtonLabel(version) {
+  const cleanVersion = rollbackVersion(version);
+  if (!cleanVersion) return 'Rollback version';
+  return `Rollback to v${cleanVersion}`;
+}
+
+function rollbackOptionsFor(release) {
+  const raw = Array.isArray(release?.rollback_options)
+    ? release.rollback_options
+    : Array.isArray(release?.github_rollback_options) ? release.github_rollback_options : [];
+  const seen = new Set();
+  return raw.filter((option) => {
+    const version = rollbackVersion(option?.version);
+    if (!version || seen.has(version)) return false;
+    seen.add(version);
+    return true;
+  }).map((option) => ({ ...option, version: rollbackVersion(option.version) })).slice(0, 25);
+}
+
+function recommendedRollbackOptions(release) {
+  const options = rollbackOptionsFor(release);
+  const selected = [];
+  const lines = new Set();
+  // Prefer the newest verified release from each 0.x minor line, then fill
+  // the remaining slots with the next newest versions. This keeps the
+  // buttons useful without hiding the complete GitHub history in the menu.
+  for (const option of options) {
+    const match = option.version.match(/^(\d+)\.(\d+)\./);
+    const line = match ? `${match[1]}.${match[2]}` : option.version;
+    if (lines.has(line)) continue;
+    lines.add(line);
+    selected.push(option);
+    if (selected.length >= 4) break;
+  }
+  for (const option of options) {
+    if (selected.length >= 4) break;
+    if (!selected.some((item) => item.version === option.version)) selected.push(option);
+  }
+  return selected;
+}
+
+function rollbackOptionDescription(option) {
+  const published = String(option?.published_at || '').slice(0, 10);
+  const size = releaseSizeBytes(option?.asset_size) !== null ? ` · ${releaseSizeLabel(option.asset_size)}` : '';
+  return `Verified GitHub archive${size}${/^\d{4}-\d{2}-\d{2}$/.test(published) ? ` · ${published}` : ''}`.slice(0, 100);
+}
+
+export function botRollbackOptionsEmbed(release) {
+  const options = rollbackOptionsFor(release);
+  const localVersion = rollbackVersion(release?.rollback_version);
+  const recommended = recommendedRollbackOptions(release);
+  const current = rollbackVersion(release?.current) || 'unknown';
+  const history = options.length
+    ? `**${options.length}** verified GitHub version${options.length === 1 ? '' : 's'} are available below.`
+    : 'No verified GitHub archive is currently available.';
+  const local = release?.rollback_available && localVersion
+    ? `A retained local image pair is also available at **v${localVersion}**.`
+    : release?.rollback_available
+      ? 'A retained local rollback is available, but its version is not labelled.'
+      : 'No retained local image pair is available.';
+  const embed = base(
+    'Homelab Control // rollback options',
+    `Current version · **v${safeUpdateText(current, 40)}**\n\nChoose a previous version to review before anything changes. ${history} ${local}\n\n⚠️ **Reverting to much older releases is not recommended.** Older builds may be incompatible with the current configuration, APIs or stored data. Prefer the newest verified option unless you have a specific reason to go further back.`,
+    'Manual administrator action · exact GitHub archive and SHA-256 digest are checked',
+  ).setColor(colors.warn);
+  if (recommended.length) {
+    embed.addFields({
+      name: 'Recommended previous releases',
+      value: recommended.map((option) => `• **v${safeUpdateText(option.version, 40)}** · ${releaseSizeBytes(option.asset_size) !== null ? releaseSizeLabel(option.asset_size) : 'size unavailable'} · newest verified option in its release line`).join('\n').slice(0, 1024),
+      inline: false,
+    });
+  }
+  if (release?.github_rollback_detail && !options.length) {
+    embed.addFields({ name: 'GitHub history', value: safeUpdateText(release.github_rollback_detail, 300), inline: false });
+  }
+  return embed;
+}
+
+export function botRollbackOptionsRows(release) {
+  const options = rollbackOptionsFor(release);
+  const recommended = recommendedRollbackOptions(release);
+  const localVersion = rollbackVersion(release?.rollback_version);
+  const buttons = [...recommended];
+  if (release?.rollback_available && release?.rollback_source === 'local') {
+    // Keep the retained-image action separate from the GitHub version with
+    // the same number. The worker can then honour the user's choice instead
+    // of silently replacing a local restore with a download.
+    buttons.push({ version: localVersion, local: true });
+  }
+  const rows = backRow('updates', 'Back to updates');
+  for (let index = 0; index < buttons.length; index += 5) {
+    rows.push(new ActionRowBuilder().addComponents(buttons.slice(index, index + 5).map((option) => (
+      new ButtonBuilder()
+        .setCustomId(option.local ? 'updates:bot-rollback-retained' : `updates:bot-rollback-version:${safeUpdateText(option.version, 32)}`)
+        .setLabel(option.local ? (localVersion ? `Rollback to retained v${localVersion}` : 'Rollback to retained version') : rollbackButtonLabel(option.version))
+        .setEmoji('↩️')
+        .setStyle(ButtonStyle.Secondary)
+    ))));
+  }
+  if (options.length) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId('updates:bot-rollback-select')
+        .setPlaceholder('Select a previous GitHub version')
+        .addOptions(options.map((option) => ({
+          label: `v${safeUpdateText(option.version, 80)}`.slice(0, 100),
+          value: safeUpdateText(option.version, 80),
+          description: rollbackOptionDescription(option),
+        }))),
+    ));
+  }
+  return rows;
+}
+
+export function botRollbackConfirmationEmbed(release, selection = {}) {
+  const version = rollbackVersion(selection?.version || release?.rollback_version);
+  const target = version ? `v${version}` : (selection?.local ? 'retained previous release' : 'selected release');
+  const source = selection?.local
+    ? 'The bridge will use the retained local control images when available.'
+    : 'The bridge will fetch this exact GitHub release, verify its SHA-256 digest, and build only the control agent and bot.';
+  const size = releaseSizeBytes(selection?.asset_size) !== null ? ` Source archive size · **${releaseSizeLabel(selection.asset_size)}**.` : '';
+  return base(
+    'Confirm Homelab Control rollback',
+    `Roll back to **${safeUpdateText(target, 50)}**?${size}\n\n${source}\n\n⚠️ Reverting to much older releases is not recommended because configuration, APIs or stored data may no longer be compatible. Only the control containers will be changed, and both health checks must pass before completion is reported.`,
+    'Manual administrator confirmation · no other containers are changed',
+  ).setColor(colors.warn);
 }
 
 function updateVersionLine(update) {
@@ -362,13 +515,15 @@ function botReleasePhase(release) {
 }
 
 function botRollbackLine(release) {
-  if (!release?.rollback_available) return null;
+  const options = rollbackOptionsFor(release);
+  if (!release?.rollback_available && !options.length) return null;
   const source = release.rollback_source === 'github'
     ? 'from GitHub'
-    : release.github_rollback_available
-      ? 'retained locally · GitHub fallback ready'
+    : options.length
+      ? 'retained locally · GitHub history ready'
       : 'retained locally';
-  return `↩️ Revert available · ${safeUpdateText(release.rollback_version || 'previous version', 40)} · ${source}`;
+  const newest = options[0]?.version || rollbackVersion(release.rollback_version) || 'previous version';
+  return `↩️ Rollback options · newest **v${safeUpdateText(newest, 40)}** · ${source}`;
 }
 
 export function botReleaseSummary(release) {
@@ -389,6 +544,7 @@ export function botReleaseSummary(release) {
     : release.update_available
       ? [`🟡 **Update available**`, `Current · **${current}**`, `Latest · **${latest}**`]
       : [`🟢 **Up to date**`, `Version · **${current}**`];
+  if (releaseSizeBytes(release.asset_size) !== null) lines.push(`Source archive · **${releaseSizeLabel(release.asset_size)}**`);
   lines.push('🧑‍💻 **Manual update only** · GitHub checks are read-only until an administrator confirms an action');
   if (release.update_available && !release.asset_verified) lines.push('🔒 Update held · the release archive has no verified SHA-256 digest');
   else if (release.update_available && !release.update_supported) lines.push('🔒 Update held · the guarded host release bridge is not configured');
@@ -396,7 +552,7 @@ export function botReleaseSummary(release) {
   const rollbackLine = botRollbackLine(release);
   if (rollbackLine) lines.push(rollbackLine);
   else if (release.github_rollback_detail) {
-    lines.push(`↩️ GitHub revert unavailable · ${safeUpdateText(release.github_rollback_detail, 220)}`);
+    lines.push(`↩️ GitHub rollback options unavailable · ${safeUpdateText(release.github_rollback_detail, 220)}`);
   }
   if (release.detail && !/latest stable release|newer verified release is ready/i.test(String(release.detail))) {
     lines.push(safeUpdateText(release.detail, 280));
@@ -458,8 +614,16 @@ export function hostUpdateSummary(snapshot) {
 }
 
 function hostUpdateFieldName(snapshot, suffix = 'host') {
-  const label = knownOs(snapshot) ? operatingSystemShortLabel(snapshot, 'Host') : 'Host';
-  return `${knownOs(snapshot) ? operatingSystemIcon(snapshot) : '🖥️'} ${label} ${suffix}`.slice(0, 256);
+  const detected = knownOs(snapshot);
+  const label = detected ? operatingSystemShortLabel(snapshot, 'Host') : 'Host';
+  // Do not render the fallback as “Host host”. Keep the field useful even
+  // when the host os-release mount is unavailable, while preserving the
+  // detected OS name whenever it is known.
+  const suffixText = String(suffix || '').trim();
+  const finalLabel = !detected && suffixText.toLowerCase() === 'host'
+    ? 'Host updates'
+    : `${label}${suffixText ? ` ${suffixText}` : ''}`;
+  return `${detected ? operatingSystemIcon(snapshot) : '🖥️'} ${finalLabel}`.slice(0, 256);
 }
 
 export function updatesEmbed(snapshot, systemUpdates = null) {
@@ -522,8 +686,9 @@ export function updatesRows(snapshot, systemOrAllow = null, actions = true) {
   if (allowActions && botRelease?.configured && botRelease.update_available && botRelease.asset_verified && botRelease.update_supported) {
     botActions.push(new ButtonBuilder().setCustomId('updates:bot-update').setLabel(`Update bot · ${safeUpdateText(botRelease.latest || 'latest', 24)}`).setEmoji('🤖').setStyle(ButtonStyle.Success));
   }
-  if (allowActions && botRelease?.rollback_available && botRelease.update_supported) {
-    botActions.push(new ButtonBuilder().setCustomId('updates:bot-rollback').setLabel(rollbackActionLabel(botRelease.rollback_version)).setEmoji('↩️').setStyle(ButtonStyle.Secondary));
+  const rollbackOptions = rollbackOptionsFor(botRelease);
+  if (allowActions && (botRelease?.rollback_available || rollbackOptions.length) && botRelease.update_supported) {
+    botActions.push(new ButtonBuilder().setCustomId('updates:bot-rollback-options').setLabel('Rollback options').setEmoji('↩️').setStyle(ButtonStyle.Secondary));
   }
   if (botActions.length) rows.push(new ActionRowBuilder().addComponents(botActions));
   const updates = Array.isArray(snapshot?.updates) ? snapshot.updates : [];

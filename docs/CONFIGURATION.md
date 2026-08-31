@@ -55,10 +55,12 @@ The bridge keeps release images under `HOMELAB_CONTROL_RELEASE_ROOT` and never
 uses a shell-evaluated update command.
 
 For `/updates` bot rollback, the agent first reports a retained local image
-pair when one exists. If it does not, it checks the configured public GitHub
-repository for the highest earlier stable semantic version with exactly one
-source archive and a GitHub SHA-256 digest. The administrator sees that version
-on the version rollback button; the root bridge re-validates the repository, tag,
+pair when one exists. It also checks the configured public GitHub repository
+for up to 25 earlier stable releases with exactly one source archive and a
+GitHub SHA-256 digest. The administrator sees adaptive source-archive download
+sizes in the rollback-options view and can choose a recommended release line
+or an exact version from the selector. The root bridge re-validates the
+repository, tag,
 download path, archive layout and digest before rebuilding only the control
 agent and bot.
 

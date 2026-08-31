@@ -37,7 +37,7 @@ BOT_RELEASE_COMPOSE_PROJECT = os.getenv("HOMELAB_CONTROL_COMPOSE_PROJECT", "").s
 BOT_RELEASE_MAX_ARCHIVE_BYTES = 250 * 1024 * 1024
 BOT_RELEASE_TIMEOUT_SECONDS = 1800
 BOT_RELEASE_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100}$")
-BOT_RELEASE_VERSION_RE = re.compile(r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:(b)|-[0-9A-Za-z.-]+)?$", re.IGNORECASE)
+BOT_RELEASE_VERSION_RE = re.compile(r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:[a-z]|-[0-9A-Za-z.-]+)?$", re.IGNORECASE)
 BOT_RELEASE_DIGEST_RE = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
 UPDATE_NOTIFIER_FILE = Path("/var/lib/update-notifier/updates-available")
 OS_RELEASE_FILE = Path("/etc/os-release")
@@ -298,7 +298,7 @@ def bot_version(value: str):
     if not match:
         return None
     value = str(value).strip().lstrip("v")
-    return value[:-1] + "b" if value.lower().endswith("b") else value
+    return value[:-1] + value[-1].lower() if re.fullmatch(r"\d+\.\d+\.\d+[a-z]", value, re.IGNORECASE) else value
 
 
 def _release_version_key(value):
@@ -306,10 +306,10 @@ def _release_version_key(value):
     normalised = bot_version(value)
     if not normalised:
         return None
-    if normalised.lower().endswith("b") and "-" not in normalised:
+    if re.fullmatch(r"\d+\.\d+\.\d+[a-z]", normalised, re.IGNORECASE):
         base = normalised[:-1]
         numbers = tuple(int(part) for part in base.split("."))
-        return (*numbers, 2, "b")
+        return (*numbers, 2, normalised[-1].lower())
     base, _, prerelease = normalised.partition("-")
     numbers = tuple(int(part) for part in base.split("."))
     return (*numbers, 1 if not prerelease else 0, prerelease or "")
@@ -415,6 +415,9 @@ def validated_release_request(request: dict):
     repository = str(request.get("repository") or "").strip()
     tag = str(request.get("tag") or "").strip()
     version = bot_version(str(request.get("version") or ""))
+    selected_version = request.get("selected_version")
+    if selected_version is not None and bot_version(str(selected_version)) != version:
+        raise RuntimeError("The selected rollback version does not match its release metadata")
     asset_name = str(request.get("asset_name") or "").strip()
     asset_url = str(request.get("asset_url") or "").strip()
     digest = str(request.get("asset_digest") or "").strip().lower()
@@ -494,7 +497,7 @@ def release_snapshot():
 def snapshot_version(snapshot):
     images = [snapshot.get("bot_image"), snapshot.get("agent_image")]
     for image in images:
-        match = re.search(r":(v?(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:b|-[0-9A-Za-z.-]+)?)$", str(image or ""), re.IGNORECASE)
+        match = re.search(r":(v?(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:[a-z]|-[0-9A-Za-z.-]+)?)$", str(image or ""), re.IGNORECASE)
         if match:
             return bot_version(match.group(1))
     return "previous release"
@@ -622,7 +625,17 @@ def run_bot_rollback(request: dict):
         current = release_snapshot()
         if not current.get("agent_image") or not current.get("bot_image"):
             raise RuntimeError("The running control containers could not be identified; rollback was not attempted")
-        using_local_images = bool(status.get("rollback_available") and isinstance(snapshot, dict) and snapshot.get("agent_image") and snapshot.get("bot_image"))
+        # An explicit GitHub selection must be honoured even when a retained
+        # image pair exists; the local shortcut is reserved for the default
+        # “previous release” action or an explicitly selected local version.
+        explicit_github_selection = bool(request.get("selected_version") and request.get("asset_url"))
+        using_local_images = bool(
+            not explicit_github_selection
+            and status.get("rollback_available")
+            and isinstance(snapshot, dict)
+            and snapshot.get("agent_image")
+            and snapshot.get("bot_image")
+        )
         if using_local_images:
             target_version = snapshot_version(snapshot)
             status["phase"] = "restarting"
@@ -640,8 +653,9 @@ def run_bot_rollback(request: dict):
                 write_bot_status(status)
                 using_local_images = False
         if not using_local_images:
-            # A fresh install, a pruned image pair, or a failed local restore
-            # can still revert to the highest earlier verified GitHub release.
+            # A fresh install, a pruned image pair, a failed local restore, or
+            # an explicit older-version choice can fetch a verified GitHub
+            # release selected by the agent.
             validated = validated_release_request(request)
             _repository, _tag, target_version, _asset_name, _asset_url, _digest = validated
             current_version = snapshot_version(current)

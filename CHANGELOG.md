@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.22c - 2026-08-31
+
+1. Added verified multi-version rollback history with recommended release lines
+   and exact prior-version selection from the configured GitHub repository.
+2. Added adaptive source-archive sizes to update and rollback views, while
+   keeping the existing SHA-256 and health-check gates intact.
+3. Fixed the host maintenance fallback label so an unavailable host identity
+   cannot render as the duplicated “Host host”; host and control-container
+   operating systems remain separate.
+4. Made explicit older-version selections bypass retained-image shortcuts so
+   the requested GitHub release is the one that is downloaded and verified.
+
 ## 0.3.22b - 2026-08-31
 
 1. Published the complete numbered changelog in the GitHub release metadata so

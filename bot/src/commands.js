@@ -17,7 +17,7 @@ import { wakeDevice } from './wol.js';
 import {
   actionLoadingEmbed, backButton, backRow, base, bytes, colors, errorEmbed, helpEmbed, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, operatingSystemIcon, operatingSystemShortLabel, pingEmbed,
   controlsEmbed, controlsRows, healthEmbed, networkEmbed, panelEmbed, panelRows, reportEmbeds, serviceRows, servicesEmbed, statusEmbed, storageEmbed,
-  botReleaseLoadingEmbed, botReleaseRestartEmbed, botReleaseResultEmbed, botUpdateConfirmationEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows,
+  botReleaseLoadingEmbed, botReleaseRestartEmbed, botReleaseResultEmbed, botRollbackConfirmationEmbed, botRollbackOptionsEmbed, botRollbackOptionsRows, botUpdateConfirmationEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows,
 } from './ui.js';
 import { notifyMaintenanceEvent } from './weekly.js';
 import { clearBotReleaseResume, stageBotReleaseResume } from './release-resume.js';
@@ -430,6 +430,26 @@ function systemOsName(snapshot, fallback = 'Host') {
   return operatingSystemShortLabel(snapshot, fallback);
 }
 
+function normaliseRollbackVersion(value) {
+  const cleaned = String(value || '').trim().replace(/^v/i, '').toLowerCase();
+  return /^[0-9]+\.[0-9]+\.[0-9]+(?:[a-z]|-[0-9a-z.-]+)?$/.test(cleaned) ? cleaned : '';
+}
+
+function selectedRollback(release, requestedVersion) {
+  const wanted = normaliseRollbackVersion(requestedVersion);
+  if (!wanted) throw new Error('Choose a valid previous release version');
+  const options = Array.isArray(release?.rollback_options)
+    ? release.rollback_options
+    : Array.isArray(release?.github_rollback_options) ? release.github_rollback_options : [];
+  const selected = options.find((option) => normaliseRollbackVersion(option?.version) === wanted);
+  if (selected) return { ...selected, version: wanted };
+  const localVersion = normaliseRollbackVersion(release?.rollback_version);
+  if (release?.rollback_source === 'local' && release?.rollback_available && localVersion === wanted) {
+    return { version: wanted, local: true };
+  }
+  throw new Error('That rollback version is no longer available; open Rollback options again to refresh GitHub history');
+}
+
 async function runSystemUpdateWorkflow(interaction, initialSnapshot = {}) {
   let snapshot = initialSnapshot;
   let tick = 0;
@@ -474,14 +494,14 @@ async function runSystemRebootWorkflow(interaction, jobId) {
   }
 }
 
-async function runBotReleaseWorkflow(interaction, action) {
+async function runBotReleaseWorkflow(interaction, action, selectedVersion = '') {
   let release = { phase: 'queued' };
   let tick = 0;
   let accepted = null;
   await interaction.update({ embeds: [botReleaseLoadingEmbed(action, release, tick)], components: [] });
   try {
     accepted = action === 'rollback'
-      ? await agent.rollbackBot(interaction.user)
+      ? await agent.rollbackBot(interaction.user, selectedVersion)
       : await agent.updateBot(interaction.user);
     stageBotReleaseResume(interaction, action, accepted);
     release = { ...release, ...accepted, phase: 'queued' };
@@ -720,23 +740,60 @@ export async function handleComponent(interaction) {
       return;
     }
 
-    if (interaction.customId === 'updates:bot-rollback') {
+    if (interaction.customId === 'updates:bot-rollback-options' || interaction.customId === 'updates:bot-rollback') {
       if (!isAdmin(interaction)) throw new Error('Admin access is required for bot rollback');
       const snapshot = await agent.updates(true);
       const release = snapshot.bot;
-      if (!release?.rollback_available) throw new Error('No previous bot release is available to revert to');
+      const options = Array.isArray(release?.rollback_options)
+        ? release.rollback_options
+        : Array.isArray(release?.github_rollback_options) ? release.github_rollback_options : [];
+      if (!release?.rollback_available && !options.length) throw new Error('No previous bot release is available; refresh the update view');
       if (!release.update_supported) throw new Error('The guarded host release bridge is not configured');
-      const id = stageConfirmation(interaction.user.id, { type: 'bot-rollback', version: release.rollback_version });
-      const source = release.rollback_source === 'github'
-        ? 'The bridge will fetch that exact earlier release from GitHub and verify its SHA-256 digest before building.'
-        : 'The bridge will use the retained previous control images when available; if they were pruned, it will fetch the exact earlier GitHub release and verify its SHA-256 digest.';
       await interaction.reply({
         ephemeral: true,
-        embeds: [base('Confirm Homelab Control rollback', `Restore the previous control release${release.rollback_version ? ` **${release.rollback_version}**` : ''}?
+        embeds: [botRollbackOptionsEmbed(release)],
+        components: botRollbackOptionsRows(release),
+      });
+      return;
+    }
 
-${source}
+    if (interaction.customId === 'updates:bot-rollback-retained') {
+      if (!isAdmin(interaction)) throw new Error('Admin access is required for bot rollback');
+      const snapshot = await agent.updates(true);
+      const release = snapshot.bot;
+      if (!release?.update_supported) throw new Error('The guarded host release bridge is not configured');
+      if (!release?.rollback_available || release?.rollback_source !== 'local') throw new Error('The retained local rollback is no longer available; open Rollback options again to refresh');
+      const localVersion = normaliseRollbackVersion(release.rollback_version);
+      const id = stageConfirmation(interaction.user.id, {
+        type: 'bot-rollback',
+        version: localVersion || null,
+        selectedVersion: '',
+      });
+      await interaction.reply({
+        ephemeral: true,
+        embeds: [botRollbackConfirmationEmbed(release, { version: localVersion, local: true })],
+        components: confirmRows(id),
+      });
+      return;
+    }
 
-Only the control agent and bot containers will be changed, then both health checks must pass.`).setColor(colors.warn)],
+    if (interaction.customId === 'updates:bot-rollback-select' || interaction.customId.startsWith('updates:bot-rollback-version:')) {
+      if (!isAdmin(interaction)) throw new Error('Admin access is required for bot rollback');
+      const requestedVersion = interaction.customId === 'updates:bot-rollback-select'
+        ? interaction.values?.[0]
+        : interaction.customId.slice('updates:bot-rollback-version:'.length);
+      const snapshot = await agent.updates(true);
+      const release = snapshot.bot;
+      if (!release?.update_supported) throw new Error('The guarded host release bridge is not configured');
+      const selection = selectedRollback(release, requestedVersion);
+      const id = stageConfirmation(interaction.user.id, {
+        type: 'bot-rollback',
+        version: selection.version,
+        selectedVersion: selection.version,
+      });
+      await interaction.reply({
+        ephemeral: true,
+        embeds: [botRollbackConfirmationEmbed(release, selection)],
         components: confirmRows(id),
       });
       return;
@@ -900,7 +957,7 @@ Only the control agent and bot containers will be changed, then both health chec
         return;
       }
       if (pending.type === 'bot-rollback') {
-        await runBotReleaseWorkflow(interaction, 'rollback');
+        await runBotReleaseWorkflow(interaction, 'rollback', pending.selectedVersion || pending.version);
         return;
       }
       if (pending.type === 'runtipi') {

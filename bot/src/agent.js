@@ -56,10 +56,12 @@ export const agent = {
       'X-Discord-User-Name': user.username,
     },
   }),
-  rollbackBot: (user) => request('/v1/bot-release/rollback', {
+  rollbackBot: (user, selectedVersion = '') => request('/v1/bot-release/rollback', {
     method: 'POST',
     timeoutMs: 30_000,
+    body: JSON.stringify(selectedVersion ? { selected_version: selectedVersion } : {}),
     headers: {
+      'Content-Type': 'application/json',
       'X-Discord-User-ID': user.id,
       'X-Discord-User-Name': user.username,
     },

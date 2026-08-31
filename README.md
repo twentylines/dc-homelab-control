@@ -107,21 +107,26 @@ is the complete path from a fresh homelab to a tested public release:
    configured GitHub repository and checksum; an administrator confirms the
    action; the bridge backs up the current pair, stages the exact release,
    rebuilds only `agent` and `bot`, waits for Docker and application health,
-   reports the measured latency, and keeps the previous pair for a version rollback.
-   When those local images have been pruned, the same button discovers the
-   highest earlier stable GitHub release with a verified archive digest and
-   fetches that exact version. It never accepts an arbitrary tag or an
-   unverified download.
+   reports the measured latency, and keeps the previous pair for rollback.
+   `/updates` shows the source-archive download size in adaptive units (the
+   built image size is separate) and opens a
+   rollback-options view with recommended release lines plus the complete
+   verified history available from GitHub. When those local images have been
+   pruned, choosing a version fetches that exact release. It never accepts an
+   arbitrary tag or an unverified download.
    Supported apt-family host package updates and host reboots are separate,
    explicitly confirmed operations and are never triggered by a container
    update.
 7. **Publish only what was tested.** Run the offline Python and Node test
    suites, review the support matrix, inspect the staged file list and perform
    a secret scan. Commit to the intended repository, create a version tag such
-   as `v0.3.22`, and let `.github/workflows/release.yml` create the source
-   archive, `SHA256SUMS`, GitHub release and versioned `amd64`/`arm64` GHCR
-   images. Make the GHCR packages public before another host installs the
-   Runtipi definition. Do not advertise an untested dashboard as supported.
+   as `v0.3.22` (or compact hotfix `v0.3.22c`), and let
+   `.github/workflows/release.yml` create the source archive, `SHA256SUMS`,
+   GitHub release and versioned `amd64`/`arm64` GHCR
+   images. Compact letter hotfix tags such as `v0.3.22c` are supported and are
+   ordered after their matching stable patch. Make the GHCR packages public
+   before another host installs the Runtipi definition. Do not advertise an
+   untested dashboard as supported.
 8. **Install and support it.** Point the Runtipi app at the exact published
    image/tag, complete the local configuration, and repeat the private-guild
    checks on that host. If a release fails health verification, use the retained
@@ -199,13 +204,16 @@ Then edit `/etc/homelab-control/maintenance.env` and set the repository,
 Compose file, optional Compose environment file and project name. The bridge
 builds and recreates only the `agent` and `bot` services, retains the previous
 images, verifies both health checks, and automatically restores the previous
-images if the new release is not healthy. `/updates` exposes a version rollback
-while a previous verified image pair is retained. If the pair has been pruned,
-the button falls back to the highest earlier stable release listed by GitHub;
-the agent passes the exact tag, archive URL and digest to the bridge, which
-validates them again before downloading and building. No update or rollback is
-automatic: an administrator must confirm it. Release requests carry a manual
-confirmation marker; requests without it are refused by the bridge.
+images if the new release is not healthy. `/updates` exposes **Rollback
+options**, with recommended previous release lines and a selector populated
+from GitHub's verified release archives. Selecting a version stages a separate
+administrator confirmation; the agent resolves the version to its exact tag,
+archive URL and digest, and the bridge validates them again before downloading
+and building. A retained local image pair remains available as a fallback.
+No update or rollback is automatic: an administrator must confirm it. Release
+requests carry a manual confirmation marker; requests without it are refused
+by the bridge. Reverting to much older versions is not recommended because
+configuration, APIs or stored data may no longer be compatible.
 
 The worker rejects non-GitHub URLs, path traversal, symlinks, unexpected
 archive contents, checksum mismatches and releases from a different configured
