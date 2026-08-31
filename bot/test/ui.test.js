@@ -248,6 +248,8 @@ test('panel refresh stays on the panel and all secondary views retain a back rou
   assert.equal(panel[0].custom_id, 'nav:panel');
   const detail = panelRows(true).flatMap((row) => row.toJSON().components || []);
   assert.ok(detail.some((component) => component.custom_id === 'nav:panel'));
+  assert.ok(detail.some((component) => component.custom_id === 'nav:panel:back'));
+  assert.equal(new Set(detail.map((component) => component.custom_id)).size, detail.length);
 });
 
 test('deep views offer a direct home route beside their parent route', () => {
@@ -433,6 +435,17 @@ test('bot release UI reports GitHub checks and exposes guarded update and rollba
   const rollback = botReleaseResultEmbed('rollback', { phase: 'rolled_back', current: '0.3.16', previous_version: '0.3.17', rollback_source: 'github', detail: 'Release 0.3.16 is running and both control health checks passed', events: [{ message: 'Previous bot release restored and verified' }] }).toJSON();
   assert.match(rollback.description, /Previous bot release restored/);
   assert.match(rollback.description, /GitHub archive/);
+  assert.match(rollback.footer.text, /control containers restored and verified/);
+  const refused = botReleaseResultEmbed('update', {
+    phase: 'failed',
+    current: '0.4.0',
+    detail: 'The release version is not a valid semantic version',
+    containers_changed: false,
+    restored: false,
+    events: [{ message: 'Bot release was refused before changing containers' }],
+  }).toJSON();
+  assert.match(refused.footer.text, /no containers changed/);
+  assert.doesNotMatch(refused.footer.text, /verified/i);
 });
 
 test('settings controls keep the detected catalogue and return to settings', () => {

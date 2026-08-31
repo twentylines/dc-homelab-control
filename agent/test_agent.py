@@ -68,6 +68,30 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertEqual(host["pretty_name"], "Ubuntu Server 24.04.4 LTS")
         self.assertEqual(host["source"], "host-proc-root-os-release")
 
+    def test_host_os_uses_host_bridge_snapshot_when_all_os_mounts_are_missing(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            maintenance = root / "maintenance"
+            maintenance.mkdir()
+            (maintenance / "status.json").write_text(json.dumps({
+                "kind": "host",
+                "os": {
+                    "id": "ubuntu",
+                    "name": "Ubuntu",
+                    "pretty_name": "Ubuntu Server 24.04.4 LTS",
+                    "version_id": "24.04",
+                },
+            }), encoding="utf-8")
+            with patch.object(self.module, "HOST_OS_RELEASE_FILE", root / "missing"), \
+                    patch.object(self.module, "HOST_PROC", root / "proc"), \
+                    patch.object(self.module, "MAINTENANCE_DIR", maintenance):
+                host = self.module.host_os()
+        self.assertEqual(host["id"], "ubuntu")
+        self.assertEqual(host["pretty_name"], "Ubuntu Server 24.04.4 LTS")
+        self.assertEqual(host["source"], "maintenance-status")
+
     def test_sanitizes_audit_values(self):
         self.assertEqual(self.module.sanitize_audit_value("Sai\nadmin"), "Sai?admin")
 
@@ -573,6 +597,97 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertIn("Safer restart hand-off", status["release_notes"])
         self.assertNotIn("do-not-forward", status["release_notes"])
 
+    def test_bot_release_status_prefers_running_images_and_preserves_failure_detail(self):
+        import tempfile
+
+        running = [
+            {
+                "State": "running",
+                "Image": "local/homelab-control-agent:0.4.0",
+                "Labels": {"com.docker.compose.service": "agent"},
+            },
+            {
+                "State": "running",
+                "Image": "local/homelab-control-bot:0.4.0",
+                "Labels": {"com.docker.compose.service": "bot"},
+            },
+        ]
+        failure = {
+            "phase": "failed",
+            "current_version": "0.3.19",
+            "detail": "The rollback Compose definition failed validation",
+            "containers_changed": False,
+            "restored": False,
+            "events": [{"message": "Rollback was refused before changing containers"}],
+        }
+        with tempfile.TemporaryDirectory() as directory, patch.object(self.module, "HOMELAB_CONTROL_REPOSITORY", "example/homelab-control"), \
+                patch.object(self.module, "HOMELAB_CONTROL_VERSION", "0.3.19"), \
+                patch.object(self.module, "BOT_RELEASE_STATUS_FILE", pathlib.Path(directory) / "bot-release.json"), \
+                patch.object(self.module, "containers", return_value=running), \
+                patch.object(self.module, "_read_json_file", return_value=failure), \
+                patch.object(self.module, "_github_releases_payload", return_value=[]), \
+                patch.object(self.module, "_github_release_payload", return_value={
+                    "tag_name": "v0.4.0",
+                    "prerelease": False,
+                    "assets": [],
+                }):
+            self.module._bot_release_cache_value = None
+            self.module._bot_release_cache_timestamp = 0.0
+            status = self.module.bot_release_status(force=True)
+        self.assertEqual(status["current"], "0.4.0")
+        self.assertEqual(status["current_source"], "running control images")
+        self.assertEqual(status["phase"], "failed")
+        self.assertIn("rollback Compose definition failed validation", status["detail"])
+        self.assertFalse(status["containers_changed"])
+
+    def test_bot_release_status_holds_actions_when_legacy_bridge_is_active(self):
+        import tempfile
+
+        state = {
+            "phase": "idle",
+            "update_supported": True,
+            "rollback_available": True,
+            "current_version": "0.4.0",
+        }
+        with tempfile.TemporaryDirectory() as directory, patch.object(self.module, "HOMELAB_CONTROL_REPOSITORY", "example/homelab-control"), \
+                patch.object(self.module, "BOT_RELEASE_STATUS_FILE", pathlib.Path(directory) / "bot-release.json"), \
+                patch.object(self.module, "_safe_bot_release_state", return_value=state), \
+                patch.object(self.module, "_safe_maintenance_status", return_value={"kind": "bot", "bridge_version": 0, "bridge_capabilities": []}), \
+                patch.object(self.module, "_running_control_version", return_value="0.4.0"), \
+                patch.object(self.module, "_github_releases_payload", return_value=[]), \
+                patch.object(self.module, "_github_release_payload", return_value={
+                    "tag_name": "v0.4.1",
+                    "prerelease": False,
+                    "assets": [],
+                }):
+            self.module._bot_release_cache_value = None
+            self.module._bot_release_cache_timestamp = 0.0
+            status = self.module.bot_release_status(force=True)
+        self.assertFalse(status["bridge_ready"])
+        self.assertFalse(status["update_supported"])
+        self.assertIn("legacy", status["detail"])
+
+    def test_bot_release_status_allows_actions_only_with_current_bridge_protocol(self):
+        import tempfile
+
+        state = {"phase": "idle", "update_supported": True}
+        with tempfile.TemporaryDirectory() as directory, patch.object(self.module, "HOMELAB_CONTROL_REPOSITORY", "example/homelab-control"), \
+                patch.object(self.module, "BOT_RELEASE_STATUS_FILE", pathlib.Path(directory) / "bot-release.json"), \
+                patch.object(self.module, "_safe_bot_release_state", return_value=state), \
+                patch.object(self.module, "_safe_maintenance_status", return_value={"kind": "host", "bridge_version": 2, "bridge_capabilities": ["host-os", "host-updates", "bot-release-v2"]}), \
+                patch.object(self.module, "_running_control_version", return_value="0.4.0"), \
+                patch.object(self.module, "_github_releases_payload", return_value=[]), \
+                patch.object(self.module, "_github_release_payload", return_value={
+                    "tag_name": "v0.4.1",
+                    "prerelease": False,
+                    "assets": [],
+                }):
+            self.module._bot_release_cache_value = None
+            self.module._bot_release_cache_timestamp = 0.0
+            status = self.module.bot_release_status(force=True)
+        self.assertTrue(status["bridge_ready"])
+        self.assertTrue(status["update_supported"])
+
     def test_bot_release_status_detects_compact_b_hotfix(self):
         import tempfile
 
@@ -760,6 +875,29 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertEqual(writes[0]["selected_version"], "0.3.17")
         self.assertEqual(writes[0]["asset_url"], selected["asset_url"])
         self.assertEqual(writes[0]["asset_digest"], selected["asset_digest"])
+
+    def test_rollback_refuses_to_queue_without_a_verified_target(self):
+        import tempfile
+
+        snapshot = {
+            "phase": "idle",
+            "configured": True,
+            "update_supported": True,
+            "rollback_available": True,
+            "rollback_source": "github",
+            "rollback_options": [],
+            "github_rollback_available": False,
+            "repository": "example/homelab-control",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            with patch.object(self.module, "MAINTENANCE_DIR", root), \
+                    patch.object(self.module, "SYSTEM_REQUEST_FILE", root / "request.json"), \
+                    patch.object(self.module, "bot_release_status", return_value=snapshot), \
+                    patch.object(self.module, "_write_maintenance_request") as write_request:
+                with self.assertRaisesRegex(RuntimeError, "No verified rollback target"):
+                    self.module._queue_bot_release_request("bot_rollback", "123", "Sai")
+        write_request.assert_not_called()
 
     def test_beta_automatic_release_requires_live_patch_acknowledgement(self):
         import tempfile

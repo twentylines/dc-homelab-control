@@ -99,7 +99,7 @@ RUNTIPI_UPDATE_ALL_TIMEOUT = max(120, min(780, int(os.getenv("RUNTIPI_UPDATE_ALL
 RUNTIPI_PROTECTED_APP_IDS = {"homelab-control", "hades-control", "backend", "runtipi"}
 CONTROL_BOT_NAME = os.getenv("CONTROL_BOT_NAME", "Homelab Control").strip() or "Homelab Control"
 HOMELAB_CONTROL_REPOSITORY = os.getenv("HOMELAB_CONTROL_REPOSITORY", "").strip()
-HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.4.0a").strip() or "0.4.0a"
+HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.4.0b").strip() or "0.4.0b"
 HOMELAB_CONTROL_RELEASE_CHANNEL = os.getenv("HOMELAB_CONTROL_RELEASE_CHANNEL", "stable").strip().lower() or "stable"
 if HOMELAB_CONTROL_RELEASE_CHANNEL not in {"stable", "beta"}:
     HOMELAB_CONTROL_RELEASE_CHANNEL = "stable"
@@ -449,12 +449,16 @@ def docker_request(method: str, path: str, body: bytes | None = None) -> tuple[i
     if body is not None:
         headers["Content-Type"] = "application/json"
         headers["Content-Length"] = str(len(body))
-    connection.request(method, path, body=body, headers=headers)
-    response = connection.getresponse()
-    payload = response.read()
-    status = response.status
-    connection.close()
-    return status, payload
+    try:
+        connection.request(method, path, body=body, headers=headers)
+        response = connection.getresponse()
+        payload = response.read()
+        return response.status, payload
+    finally:
+        # Close failed connections too.  A status refresh can run while the
+        # Docker socket is unavailable; leaking one Unix socket per refresh
+        # eventually makes an otherwise healthy agent look stuck.
+        connection.close()
 
 
 def docker_json(path: str):
@@ -1693,6 +1697,37 @@ def _os_identity(path: Path, source: str, unavailable_name: str):
     }
 
 
+def _bridge_host_os():
+    """Use a host identity published by the root bridge when mounts are absent.
+
+    Some regenerated Runtipi Compose files omit the read-only os-release bind.
+    The root-owned maintenance bridge still reads the host file directly and
+    publishes a bounded host snapshot in the shared maintenance directory.
+    Only an explicitly host-kind snapshot is accepted; bot-release state can
+    never supply or overwrite the host identity.
+    """
+    try:
+        raw = json.loads((MAINTENANCE_DIR / "status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or raw.get("kind") != "host" or not isinstance(raw.get("os"), dict):
+        return None
+    os_value = raw["os"]
+    identifier = re.sub(r"[^a-z0-9._+-]", "", str(os_value.get("id") or "").lower())
+    if not identifier or identifier == "unknown":
+        return None
+    name = _clean_os_value(os_value.get("name") or identifier.title(), 80)
+    pretty = _clean_os_value(os_value.get("pretty_name") or name, 120)
+    version_id = re.sub(r"[^a-zA-Z0-9._+-]", "", str(os_value.get("version_id") or ""))[:40]
+    return {
+        "id": identifier[:40],
+        "name": name or identifier.title(),
+        "pretty_name": pretty or name or identifier.title(),
+        "version_id": version_id,
+        "source": "maintenance-status",
+    }
+
+
 def host_os():
     """Return the host identity from the explicitly mounted host file.
 
@@ -1722,6 +1757,9 @@ def host_os():
         unavailable = unavailable or identity
         if identity["id"] != "unknown":
             return identity
+    bridged = _bridge_host_os()
+    if bridged:
+        return bridged
     return unavailable or _os_identity(HOST_OS_RELEASE_FILE, "host-os-release", "Host OS unavailable")
 
 
@@ -2746,6 +2784,51 @@ def _release_version_key(value):
     return (*numbers, 0, tuple(tokens))
 
 
+def _image_release_version(image):
+    """Extract a validated release version from a Docker image reference."""
+    reference = str(image or "").strip().split("@", 1)[0]
+    tag = reference.rsplit(":", 1)[-1] if ":" in reference else ""
+    return _release_version(tag)
+
+
+def _running_control_version():
+    """Prefer the versions on both running control containers over env metadata.
+
+    Runtipi keeps environment values from the original install.  They are not
+    a reliable record after an image update or rollback, so the agent checks
+    the Docker labels and image tags it can already read through its socket.
+    A version is returned only when both control services agree.
+    """
+    try:
+        versions = {}
+        for entry in containers():
+            if not isinstance(entry, dict) or entry.get("State") != "running":
+                continue
+            labels = container_labels(entry)
+            component = str(labels.get("homelab.control.component") or "").strip().lower()
+            if component not in {"agent", "bot"}:
+                # Older Runtipi-generated definitions did not preserve the
+                # product label, but their Compose service label and image
+                # name still identify the two control containers.  Require
+                # both signals so an unrelated service named “agent” cannot
+                # affect the reported version.
+                service = str(labels.get("com.docker.compose.service") or "").strip().lower()
+                image_name = str(entry.get("Image") or "").lower()
+                if service in {"agent", "bot"} and re.search(r"(?:homelab|hades)[-_]?control[-_]" + service + r"(?:[:@]|$)", image_name):
+                    component = service
+            if component not in {"agent", "bot"}:
+                continue
+            version = _image_release_version(entry.get("Image"))
+            if version:
+                versions[component] = version
+        unique = set(versions.values())
+        if len(versions) == 2 and len(unique) == 1:
+            return next(iter(unique))
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        pass
+    return None
+
+
 def _release_line(value):
     """Return the numeric patch line used for safe rollback grouping."""
     normalised = _release_version(value)
@@ -3029,6 +3112,8 @@ def _safe_bot_release_state():
     safe["rollback_available"] = bool(raw.get("rollback_available"))
     safe["update_supported"] = bool(raw.get("update_supported"))
     safe["automatic"] = bool(raw.get("automatic"))
+    safe["containers_changed"] = bool(raw.get("containers_changed"))
+    safe["restored"] = bool(raw.get("restored"))
     events = []
     for event in raw.get("events", []) if isinstance(raw.get("events"), list) else []:
         if isinstance(event, dict) and event.get("message"):
@@ -3041,10 +3126,21 @@ def bot_release_status(force=False, channel=None):
     """Check the configured public GitHub release without changing the host."""
     global _bot_release_cache_timestamp, _bot_release_cache_value
     state = _safe_bot_release_state()
+    maintenance = _safe_maintenance_status()
+    bridge_version = int(maintenance.get("bridge_version") or 0)
+    bridge_capabilities = set(maintenance.get("bridge_capabilities") or [])
+    bridge_ready = (
+        maintenance.get("kind") == "host"
+        and bridge_version >= 2
+        and "bot-release-v2" in bridge_capabilities
+    )
     repository = HOMELAB_CONTROL_REPOSITORY
     release_channel = channel if channel in {"stable", "beta"} else HOMELAB_CONTROL_RELEASE_CHANNEL
     state_current = state.get("current_version")
-    installed_version = state_current if state.get("phase") in {"complete", "rolled_back"} and _release_version(state_current) else HOMELAB_CONTROL_VERSION
+    running_version = _running_control_version()
+    installed_version = running_version or (state_current if _release_version(state_current) else HOMELAB_CONTROL_VERSION)
+    state_phase = str(state.get("phase") or "idle").lower()
+    state_detail = state.get("detail") if state_phase == "failed" else None
     base = {
         "available": True,
         "configured": bool(repository),
@@ -3054,7 +3150,9 @@ def bot_release_status(force=False, channel=None):
         "latest": None,
         "update_available": False,
         "asset_verified": False,
-        "update_supported": bool(state.get("update_supported")),
+        "update_supported": bool(state.get("update_supported")) and bridge_ready,
+        "bridge_ready": bridge_ready,
+        "bridge_version": bridge_version,
         "automatic": bool(state.get("automatic")),
         "rollback_available": bool(state.get("rollback_available")),
         "rollback_version": state.get("previous_version"),
@@ -3068,8 +3166,18 @@ def bot_release_status(force=False, channel=None):
         "job_id": state.get("job_id"),
         "requested_version": state.get("requested_version"),
         "events": state.get("events", []),
+        "containers_changed": bool(state.get("containers_changed")),
+        "restored": bool(state.get("restored")),
+        "current_source": "running control images" if running_version else "release state or configured default",
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
+    if state_detail:
+        base["detail"] = state_detail
+    if not bridge_ready and not state_detail:
+        if maintenance.get("kind") == "bot":
+            base["detail"] = "The installed maintenance bridge is legacy; update the bridge before bot releases can be used"
+        else:
+            base["detail"] = "The guarded maintenance bridge has not published the release protocol required by this bot"
     if not repository:
         base["detail"] = "Set HOMELAB_CONTROL_REPOSITORY to enable bot release checks"
         return base
@@ -3081,7 +3189,7 @@ def bot_release_status(force=False, channel=None):
     with _bot_release_cache_lock:
         if channel is None and not force and _bot_release_cache_value is not None and now - _bot_release_cache_timestamp < BOT_RELEASE_CACHE_TTL:
             cached = json.loads(json.dumps(_bot_release_cache_value))
-            cached.update({key: value for key, value in base.items() if key in {"phase", "job_id", "requested_version", "events", "rollback_available", "rollback_version", "rollback_source", "update_supported", "automatic"}})
+            cached.update({key: value for key, value in base.items() if key in {"phase", "job_id", "requested_version", "events", "rollback_available", "rollback_version", "rollback_source", "update_supported", "automatic", "containers_changed", "restored", "current", "current_source", "detail", "bridge_ready", "bridge_version"}})
             return cached
     try:
         payload = _github_release_payload(repository, release_channel)
@@ -3111,7 +3219,7 @@ def bot_release_status(force=False, channel=None):
             "asset_digest": asset.get("digest") if asset else None,
             "asset_size": asset.get("size") if asset else None,
             **rollback_fields,
-            "detail": asset_detail or ("A newer verified release is ready" if update_available else "This installation is on the latest stable release"),
+            "detail": base.get("detail") or asset_detail or ("A newer verified release is ready" if update_available else "This installation is on the latest stable release"),
         }
     except (OSError, urllib.error.URLError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         rollback_fields = _github_rollback_fields(repository, base["current"], bool(base.get("rollback_available")), base.get("rollback_version"), release_channel)
@@ -3447,6 +3555,20 @@ def _safe_maintenance_status():
             safe[key] = redact(str(value))[:240]
         else:
             safe[key] = str(value)[:160]
+    try:
+        bridge_version = int(raw.get("bridge_version"))
+    except (TypeError, ValueError):
+        bridge_version = 0
+    safe["bridge_version"] = max(0, min(99, bridge_version))
+    capabilities = raw.get("bridge_capabilities")
+    if isinstance(capabilities, list):
+        safe["bridge_capabilities"] = [
+            re.sub(r"[^a-z0-9._-]", "", str(value).lower())[:40]
+            for value in capabilities[:12]
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}", str(value or ""))
+        ]
+    else:
+        safe["bridge_capabilities"] = []
     safe["phase"] = safe.get("phase", "idle")
     safe["reboot_required"] = bool(raw.get("reboot_required"))
     events = []
@@ -3632,7 +3754,7 @@ def _queue_bot_release_request(action: str, actor_id: str, actor_name: str, sele
         if not snapshot.get("asset_verified"):
             raise RuntimeError(snapshot.get("detail", "The release archive has no verified SHA-256 digest"))
         if not snapshot.get("update_supported"):
-            raise RuntimeError("The host release bridge is installed but its Compose deployment target is not configured")
+            raise RuntimeError(snapshot.get("detail") or "The host release bridge is installed but its Compose deployment target is not configured")
         selected_version = str(snapshot.get("latest") or "")
         request = {
             "schema": 1,
@@ -3655,7 +3777,7 @@ def _queue_bot_release_request(action: str, actor_id: str, actor_name: str, sele
         if not snapshot.get("rollback_available"):
             raise RuntimeError("No previous bot release is available to roll back to")
         if not snapshot.get("update_supported"):
-            raise RuntimeError("The host release bridge is installed but its Compose deployment target is not configured")
+            raise RuntimeError(snapshot.get("detail") or "The host release bridge is installed but its Compose deployment target is not configured")
         selected = None
         if selected_version is not None and str(selected_version).strip():
             wanted = _release_version(str(selected_version).strip())
@@ -3706,6 +3828,20 @@ def _queue_bot_release_request(action: str, actor_id: str, actor_name: str, sele
                 "asset_url": rollback.get("asset_url"),
                 "asset_digest": rollback.get("asset_digest"),
             })
+        elif (selected and selected.get("local")) or (
+            not selected
+            and snapshot.get("rollback_source") == "local"
+            and snapshot.get("rollback_available")
+        ):
+            # Retained local image pairs need no GitHub metadata; the root
+            # bridge resolves the pair from its private status snapshot.
+            pass
+        else:
+            # Never queue an incomplete rollback request.  The old bridge
+            # accepted this shape and later attempted Path / None while
+            # validating it, which left the user with a failed rollback and
+            # no useful explanation.
+            raise RuntimeError("No verified rollback target is available; refresh the update view")
     try:
         _write_maintenance_request(request)
     except OSError as exc:

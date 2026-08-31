@@ -15,7 +15,7 @@ homelab without carrying those private names into the code or UI.
 
 ## Tested reference setup
 
-The reference deployment used for the 0.4.0a hotfix checks is Ubuntu
+The reference deployment used for the 0.4.0b hotfix checks is Ubuntu
 Server 24.04 LTS on amd64 with Docker managed by Runtipi, a Jellyfin/Seerr
 media stack (including Sonarr, Radarr, Prowlarr and qBittorrent), Crafty
 Controller for Minecraft, and supporting AdGuard Home, Beszel, Scrutiny,
@@ -145,7 +145,10 @@ is the complete path from a fresh homelab to a tested public release:
    updates keep their own completion response.
    Supported apt-family host package updates and host reboots are separate,
    explicitly confirmed operations and are never triggered by a container
-   update.
+   update. The agent also checks the maintenance bridge protocol before it
+   enables any bot release action; if an older worker still owns the shared
+   directory, the release controls stay unavailable until the current bridge
+   is installed, instead of sending a request the old worker cannot validate.
 7. **Publish only what was tested.** Run the offline Python and Node test
    suites, review the support matrix, inspect the staged file list and perform
    a secret scan. Commit to the intended repository, create a version tag such

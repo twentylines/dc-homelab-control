@@ -27,6 +27,12 @@ class MaintenanceWorkerTest(unittest.TestCase):
         self.assertEqual(self.module.bot_version("v0.3.22D"), "0.3.22d")
         self.assertIsNone(self.module._release_version_key("latest"))
 
+    def test_host_status_publishes_release_bridge_protocol_marker(self):
+        status = self.module.base_status()
+        self.assertEqual(status["kind"], "host")
+        self.assertEqual(status["bridge_version"], 2)
+        self.assertIn("bot-release-v2", status["bridge_capabilities"])
+
     def test_release_request_requires_exact_configured_github_asset(self):
         request = {
             "repository": "example/homelab-control",
@@ -42,6 +48,35 @@ class MaintenanceWorkerTest(unittest.TestCase):
             request["asset_url"] += "?download=1"
             with self.assertRaises(RuntimeError):
                 self.module.validated_release_request(request)
+
+    def test_release_request_rejects_missing_or_invalid_semantic_version(self):
+        request = {
+            "repository": "example/homelab-control",
+            "tag": "v0.3.18",
+            "asset_name": "homelab-control-0.3.18.tar.gz",
+            "asset_url": "https://github.com/example/homelab-control/releases/download/v0.3.18/homelab-control-0.3.18.tar.gz",
+            "asset_digest": "sha256:" + "a" * 64,
+        }
+        with patch.object(self.module, "BOT_RELEASE_REPOSITORY", "example/homelab-control"):
+            with self.assertRaisesRegex(RuntimeError, "valid semantic version"):
+                self.module.validated_release_request(request)
+            request["version"] = "not-a-version"
+            with self.assertRaisesRegex(RuntimeError, "valid semantic version"):
+                self.module.validated_release_request(request)
+
+    def test_image_only_compose_override_omits_null_build_key(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "rollback.yml"
+            self.module.compose_override(path, images={
+                "agent": "local/homelab-control-agent:0.3.19",
+                "bot": "local/homelab-control-bot:0.3.19",
+            })
+            content = path.read_text(encoding="utf-8")
+        self.assertNotIn("build:", content)
+        self.assertIn('image: "local/homelab-control-agent:0.3.19"', content)
+        self.assertIn('image: "local/homelab-control-bot:0.3.19"', content)
 
     def test_rollback_builds_the_verified_github_release_when_local_images_are_missing(self):
         import tempfile

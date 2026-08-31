@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0b - 2026-08-31
+
+1. Hardened release and rollback validation, including health-checked
+   restoration when a control-container change does not converge.
+2. Fixed retained-image rollback Compose generation and refused incomplete
+   release targets before any control container can change.
+3. Corrected running-version detection and kept host operating-system data
+   separate from the control-container operating system.
+4. Added a maintenance-bridge protocol check so incompatible legacy workers
+   cannot accept current release requests.
+5. Removed duplicate Discord component identifiers and stopped `/tasks` from
+   starting an unsolicited five-second live-refresh loop.
+6. Added release-time metadata, regression-test and Compose validation so a
+   broken or stale OTA is blocked before publication.
+
 ## 0.4.0a - 2026-08-31
 
 1. Fixed host operating-system detection when the direct host bind is missing;

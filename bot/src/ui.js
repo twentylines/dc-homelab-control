@@ -62,16 +62,16 @@ export function operatingSystemIcon(data = {}) {
   return '🖥️';
 }
 
-export function backButton(target = 'panel', label = 'Back to home') {
+export function backButton(target = 'panel', label = 'Back to home', customId = `nav:${target}`) {
   return new ButtonBuilder()
-    .setCustomId(`nav:${target}`)
+    .setCustomId(customId)
     .setLabel(label)
     .setEmoji('⬅️')
     .setStyle(ButtonStyle.Secondary);
 }
 
-export function backRow(target = 'panel', label = 'Back to home') {
-  return [new ActionRowBuilder().addComponents(backButton(target, label))];
+export function backRow(target = 'panel', label = 'Back to home', customId = `nav:${target}`) {
+  return [new ActionRowBuilder().addComponents(backButton(target, label, customId))];
 }
 
 export function deepBackRow(target, label) {
@@ -1305,10 +1305,19 @@ export function botReleaseResultEmbed(action, release) {
   const events = Array.isArray(release?.events) && release.events.length
     ? release.events.slice(-6).map((event) => `• ${safeUpdateText(event.message, 180)}`).join('\n')
     : 'No host bridge events were returned.';
+  const containersChanged = release?.containers_changed === true;
+  const restored = release?.restored === true;
+  const footer = complete
+    ? `Manual release workflow · ${phase === 'rolled_back' ? 'control containers restored and verified' : 'control containers verified'}`
+    : restored
+      ? 'Manual release workflow · previous release restored and verified'
+      : containersChanged
+        ? 'Manual release workflow · verification incomplete; container state needs review'
+        : 'Manual release workflow · no containers changed';
   return base(
     `Homelab Control // ${action === 'rollback' ? 'rollback result' : 'update result'}`,
     lines.join('\n'),
-    'Manual release workflow · control containers verified',
+    footer,
   ).setColor(complete ? colors.ok : colors.bad).addFields({ name: 'Recent activity', value: events.slice(0, 1024), inline: false });
 }
 
@@ -2051,7 +2060,10 @@ export function panelRows(withBack = false) {
     new ButtonBuilder().setCustomId('nav:updates').setLabel('Updates').setEmoji('⬆️').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('nav:settings').setLabel('Settings').setEmoji('⚙️').setStyle(ButtonStyle.Secondary),
   )];
-  if (withBack) rows.push(...backRow('panel'));
+  // The panel already has a Refresh button with nav:panel.  Discord rejects
+  // duplicate custom IDs in one message, so the deep-view home action gets a
+  // distinct ID while retaining the same navigation target in commands.js.
+  if (withBack) rows.push(...backRow('panel', 'Back to home', 'nav:panel:back'));
   return rows;
 }
 

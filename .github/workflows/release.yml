@@ -10,7 +10,105 @@ permissions:
   packages: write
 
 jobs:
+  validate-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: bot/package-lock.json
+
+      - name: Install bot dependencies
+        working-directory: bot
+        run: npm ci --ignore-scripts
+
+      - name: Run release regression tests
+        shell: bash
+        env:
+          CONTROL_TOKEN: '0123456789abcdef0123456789abcdef'
+          DISCORD_TOKEN: 'test-token'
+          DISCORD_CLIENT_ID: '123456789012345678'
+          DISCORD_GUILD_ID: '123456789012345678'
+          DISCORD_OWNER_ID: '123456789012345678'
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s agent -p 'test_*.py' -v
+          python -m unittest discover -s maintenance -p 'test_*.py' -v
+          python -m py_compile agent/agent.py maintenance/homelab-control-maintenance-worker.py
+          for file in bot/src/*.js; do node --check "$file"; done
+          (cd bot && npm test)
+
+      - name: Validate Compose definitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp config.example.env config.env
+          docker compose --env-file config.env -f compose.local.yml config >/dev/null
+          CONTROL_TOKEN=0123456789abcdef0123456789abcdef \
+          DISCORD_TOKEN=test-token \
+          DISCORD_CLIENT_ID=123456789012345678 \
+          DISCORD_GUILD_ID=123456789012345678 \
+          DISCORD_OWNER_ID=123456789012345678 \
+          APP_DATA_DIR=/tmp/homelab-control-release-data \
+          docker compose -f app/docker-compose.yml config >/dev/null
+
+      - name: Validate release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          export RELEASE_VERSION="${GITHUB_REF_NAME#v}"
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["RELEASE_VERSION"]
+          if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:[a-z]|-[0-9A-Za-z.-]+)?", version, re.IGNORECASE):
+              raise SystemExit(f"Tag v{version} is not a supported release version")
+
+          package_lock = json.loads(Path("bot/package-lock.json").read_text())
+          json_versions = {
+              "app/config.json": json.loads(Path("app/config.json").read_text())["version"],
+              "bot/package.json": json.loads(Path("bot/package.json").read_text())["version"],
+              "bot/package-lock.json": package_lock["version"],
+              "bot/package-lock.json packages root": package_lock["packages"][""]["version"],
+          }
+          mismatches = {path: value for path, value in json_versions.items() if value != version}
+          if mismatches:
+              details = ", ".join(f"{path}={value!r}" for path, value in mismatches.items())
+              raise SystemExit(f"Release v{version} does not match versioned metadata: {details}")
+
+          text_checks = {
+              "agent/agent.py": (Path("agent/agent.py").read_text(), f'os.getenv("HOMELAB_CONTROL_VERSION", "{version}").strip() or "{version}"'),
+              "config.example.env": (Path("config.example.env").read_text(), f"HOMELAB_CONTROL_VERSION={version}"),
+              "compose.local.yml": (Path("compose.local.yml").read_text(), f"HOMELAB_CONTROL_VERSION: ${{HOMELAB_CONTROL_VERSION:-{version}}}"),
+              "app/docker-compose.yml": (Path("app/docker-compose.yml").read_text(), f"HOMELAB_CONTROL_VERSION: ${{HOMELAB_CONTROL_VERSION:-{version}}}"),
+          }
+          for path, (contents, expected) in text_checks.items():
+              if expected not in contents:
+                  raise SystemExit(f"Release v{version} is missing its version default in {path}")
+
+          changelog = Path("CHANGELOG.md").read_text()
+          if not re.search(rf"^## {re.escape(version)}(?:\s|$)", changelog, re.MULTILINE):
+              raise SystemExit(f"CHANGELOG.md has no section for {version}")
+          print(f"Release metadata is consistent for v{version}")
+          PY
+
   source-release:
+    needs: validate-release
     runs-on: ubuntu-latest
     steps:
       - name: Check out the tagged source
@@ -56,6 +154,7 @@ jobs:
             --notes-file RELEASE_NOTES.md
 
   container-images:
+    needs: validate-release
     runs-on: ubuntu-latest
     steps:
       - name: Check out the tagged source

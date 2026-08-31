@@ -51,6 +51,8 @@ BOOT_ID_FILE = Path("/proc/sys/kernel/random/boot_id")
 POLL_SECONDS = 2.0
 STATUS_INTERVAL_SECONDS = 300.0
 COMMAND_TIMEOUT_SECONDS = 1800
+BRIDGE_PROTOCOL_VERSION = 2
+BRIDGE_CAPABILITIES = ("host-os", "host-updates", "bot-release-v2")
 
 
 def timestamp() -> str:
@@ -372,8 +374,6 @@ def compose_override(path: Path, contexts=None, images=None):
         lines.extend([f"  {service}:"])
         if service in contexts:
             lines.extend(["    build:", f"      context: {quote(contexts[service])}"])
-        else:
-            lines.append("    build: null")
         lines.extend([
             f"    image: {quote(images[service])}",
             "    pull_policy: never",
@@ -433,7 +433,10 @@ def validated_release_request(request: dict):
     digest = str(request.get("asset_digest") or "").strip().lower()
     if repository != BOT_RELEASE_REPOSITORY or not BOT_RELEASE_REPOSITORY_RE.fullmatch(repository):
         raise RuntimeError("The release repository does not match the configured repository")
-    if not tag or bot_version(tag) != version:
+    if not version:
+        raise RuntimeError("The release version is not a valid semantic version")
+    tag_version = bot_version(tag)
+    if not tag or not tag_version or tag_version != version:
         raise RuntimeError("The release tag is not a valid semantic version")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,160}\.(?:tar\.gz|tgz)", asset_name, re.I):
         raise RuntimeError("The release archive name is not allowed")
@@ -523,9 +526,15 @@ def restore_release(status: dict, snapshot: dict):
         append_bot_event(status, "Restoring the previous control images")
         write_bot_status(status)
         command = compose_base_command() + ["-f", str(override), "up", "-d", "--no-deps", "agent", "bot"]
+        status["containers_changed"] = True
+        write_bot_status(status)
         if not run_bot_command(status, command, "Switching back to the previous control release"):
             return False
-        return wait_control_health(status)
+        healthy = wait_control_health(status)
+        if healthy:
+            status["restored"] = True
+            write_bot_status(status)
+        return healthy
     except (OSError, RuntimeError, subprocess.SubprocessError):
         return False
     finally:
@@ -563,7 +572,7 @@ def stage_verified_release(status: dict, request: dict, validated):
 
 def run_bot_update(request: dict):
     status = base_bot_status(read_bot_status())
-    status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "requested_version": None, "detail": None, "events": [], "update_supported": bot_update_supported(), "automatic": bool(request.get("automatic"))})
+    status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "requested_version": None, "detail": None, "events": [], "update_supported": bot_update_supported(), "automatic": bool(request.get("automatic")), "containers_changed": False, "restored": False})
     write_bot_status(status)
     snapshot = None
     try:
@@ -587,6 +596,8 @@ def run_bot_update(request: dict):
                 raise RuntimeError("The control image build failed; the previous release was kept")
             status["phase"] = "restarting"
             append_bot_event(status, "Recreating only the control agent and Discord bot")
+            write_bot_status(status)
+            status["containers_changed"] = True
             write_bot_status(status)
             if not run_bot_command(status, compose_base_command() + ["-f", str(override), "up", "-d", "--no-deps", "agent", "bot"], "Starting the new control containers"):
                 raise RuntimeError("The control containers could not be started")
@@ -612,6 +623,8 @@ def run_bot_update(request: dict):
             "rollback_source": "local",
             "rollback_images": snapshot,
             "rollback_available": True,
+            "containers_changed": True,
+            "restored": False,
             "completed_at": timestamp(),
             "detail": f"Release {version} is running and both control health checks passed",
         })
@@ -626,7 +639,7 @@ def run_bot_update(request: dict):
 
 def run_bot_rollback(request: dict):
     status = base_bot_status(read_bot_status())
-    status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "requested_version": None, "detail": None, "events": [], "update_supported": bot_update_supported(), "automatic": False})
+    status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "requested_version": None, "detail": None, "events": [], "update_supported": bot_update_supported(), "automatic": False, "containers_changed": False, "restored": False})
     write_bot_status(status)
     current = None
     restore_attempted = False
@@ -687,6 +700,8 @@ def run_bot_rollback(request: dict):
                 status["phase"] = "restarting"
                 append_bot_event(status, f"Recreating the control containers with release {target_version}")
                 write_bot_status(status)
+                status["containers_changed"] = True
+                write_bot_status(status)
                 if not run_bot_command(status, compose_base_command() + ["-f", str(override), "up", "-d", "--no-deps", "agent", "bot"], "Starting the previous control release"):
                     raise RuntimeError("The previous control containers could not be started")
                 status["phase"] = "verifying_runtime"
@@ -696,6 +711,7 @@ def run_bot_rollback(request: dict):
                     raise RuntimeError("The fetched previous control release did not become healthy")
             except Exception:
                 if current and restore_release(status, current):
+                    status["restored"] = True
                     status["detail"] = "The fetched previous release failed verification; the current control release was restored"
                 else:
                     status["detail"] = "The fetched previous release failed and automatic restoration could not be verified"
@@ -715,6 +731,8 @@ def run_bot_rollback(request: dict):
             "rollback_source": "local" if using_local_images else "github",
             "rollback_images": current,
             "rollback_available": bool(current.get("agent_image") and current.get("bot_image")),
+            "containers_changed": True,
+            "restored": False,
             "completed_at": timestamp(),
             "detail": f"Release {target_version} is running and both control health checks passed",
         })
@@ -926,6 +944,12 @@ def base_status(existing=None):
     status = dict(existing or {})
     status["kind"] = "host"
     status.setdefault("schema", 1)
+    # Publish a small, non-sensitive protocol marker so a newer agent can
+    # refuse release actions when an older worker is still consuming the
+    # shared request directory.  This prevents the pre-v2 bridge from
+    # accepting a request shape it cannot safely validate.
+    status["bridge_version"] = BRIDGE_PROTOCOL_VERSION
+    status["bridge_capabilities"] = list(BRIDGE_CAPABILITIES)
     status.setdefault("phase", "idle")
     status.setdefault("job_id", None)
     status.setdefault("events", [])

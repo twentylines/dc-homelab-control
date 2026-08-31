@@ -638,7 +638,6 @@ export async function handleCommand(interaction) {
   const commandStartedAt = Date.now();
   await interaction.deferReply({ ephemeral: !publicOutput });
   let stopLoadingAnimation = null;
-  let initialTaskSnapshot = null;
   if (interaction.commandName === 'health' || interaction.commandName === 'report' || interaction.commandName === 'panel' || interaction.commandName === 'updates' || interaction.commandName === 'tasks' || interaction.commandName === 'media' || interaction.commandName === 'network' || interaction.commandName === 'settings') {
     const title = interaction.commandName === 'report' ? 'Building detailed report…' : interaction.commandName === 'health' ? 'Running health diagnostic…' : interaction.commandName === 'updates' ? 'Checking application updates…' : interaction.commandName === 'tasks' ? 'Sampling Docker resources…' : interaction.commandName === 'media' ? 'Checking detected media…' : interaction.commandName === 'network' ? 'Checking detected network services…' : interaction.commandName === 'settings' ? 'Reading settings…' : 'Loading control centre…';
     stopLoadingAnimation = await beginLoadingAnimation(interaction, title, interaction.commandName);
@@ -664,7 +663,6 @@ export async function handleCommand(interaction) {
       case 'storage': payload = { embeds: [storageEmbed(await agent.status())], components: panelRows(true) }; break;
       case 'tasks': {
         const taskResult = await tasksSnapshotPayload(true);
-        initialTaskSnapshot = taskResult.snapshot;
         payload = taskResult.payload;
         break;
       }
@@ -706,8 +704,7 @@ export async function handleCommand(interaction) {
     }
     if (stopLoadingAnimation) await stopLoadingAnimation();
     attachPostUpdateNotice(payload);
-    const message = await interaction.editReply(payload);
-    if (interaction.commandName === 'tasks') startTasksLive(interaction, message?.id || interaction.id, initialTaskSnapshot);
+    await interaction.editReply(payload);
   } catch (error) {
     if (stopLoadingAnimation) await stopLoadingAnimation();
     await interaction.editReply({ embeds: [errorEmbed(error.message)], components: backRow('panel') });
@@ -734,7 +731,6 @@ export async function handleComponent(interaction) {
       stopTasksLive(messageId);
       const target = interaction.customId.split(':')[1];
       await interaction.deferUpdate();
-      let taskSnapshot = null;
       let payload;
       if (target === 'panel') payload = await panelPayload(true);
       else if (target === 'services') payload = await servicesPayload();
@@ -748,13 +744,10 @@ export async function handleComponent(interaction) {
       else if (target === 'storage') payload = { embeds: [storageEmbed(await agent.status())], components: panelRows(true) };
       else if (target === 'media') payload = await mediaPayload();
       else if (target === 'tasks') {
-        const taskResult = await tasksPayloadWithLoading(interaction, true);
-        taskSnapshot = taskResult.snapshot;
-        payload = taskResult.payload;
+        payload = (await tasksPayloadWithLoading(interaction, true)).payload;
       } else if (target === 'updates') payload = await updatesPayload(true, isAdmin(interaction));
       else payload = await statusPayload();
-      const message = await interaction.editReply(payload);
-      if (target === 'tasks') startTasksLive(interaction, message?.id || messageId, taskSnapshot);
+      await interaction.editReply(payload);
       return;
     }
 
