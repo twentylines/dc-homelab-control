@@ -5,6 +5,8 @@ import { accessLevel, canUseCommand } from './access.js';
 import { commandData, handleAutocomplete, handleCommand, handleComponent, handleModal } from './commands.js';
 import { notifyMaintenanceOnline, startWeeklyReporter } from './weekly.js';
 import { resumeBotReleaseWorkflow } from './release-resume.js';
+import { resumeHostRebootWorkflow } from './host-reboot-resume.js';
+import { resumeBotMaintenanceWorkflow } from './maintenance-resume.js';
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
@@ -24,6 +26,8 @@ client.once(Events.ClientReady, async (ready) => {
   // one-shot online notification check. The state file prevents duplicates.
   setTimeout(() => notifyMaintenanceOnline().catch(() => {}), 12_000).unref?.();
   setTimeout(() => resumeBotReleaseWorkflow().catch((error) => console.warn('Release completion check failed:', error?.message || error)), 8_000).unref?.();
+  setTimeout(() => resumeBotMaintenanceWorkflow().catch((error) => console.warn('Maintenance completion check failed:', error?.message || error)), 8_000).unref?.();
+  setTimeout(() => resumeHostRebootWorkflow().catch((error) => console.warn('Host restart completion check failed:', error?.message || error)), 8_000).unref?.();
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {

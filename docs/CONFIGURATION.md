@@ -12,6 +12,7 @@ still be filled from that file.
 | `DISCORD_CLIENT_ID` | Yes | Discord application ID. |
 | `DISCORD_GUILD_ID` | Yes | Primary guild for command registration. |
 | `DISCORD_OWNER_ID` | Yes | First administrator identity. |
+| `DISCORD_SUPERUSER_IDS` | No | Additional identities allowed to manage access settings. |
 | `DISCORD_GUILD_IDS` | No | Additional allowed guild IDs. |
 | `DISCORD_ADMIN_USER_IDS` / `DISCORD_ADMIN_ROLE_IDS` | No | Extra administrators. |
 | `DISCORD_GUEST_USER_IDS` / `DISCORD_GUEST_ROLE_IDS` | No | Read-only users; `/wake` remains available. |
@@ -19,8 +20,11 @@ still be filled from that file.
 | `SERVICE_CONTROL_MODE` | No | `opt-out` (default), or `opt-in` for approval-before-controls. |
 | `HOMELAB_CONTROL_REPOSITORY` | No | Public GitHub `owner/repository` used for read-only bot release checks. |
 | `HOMELAB_CONTROL_VERSION` | No | Installed bot release, used for safe version comparison. |
-| `HOMELAB_CONTROL_RELEASE_CHANNEL` | No | `stable` only in this release; pre-releases are ignored. |
+| `HOMELAB_CONTROL_RELEASE_CHANNEL` | No | `stable` (default) or `beta`; beta includes stable releases and GitHub pre-releases. Automatic beta updates still require an explicit administrator acknowledgement in `/settings`. |
 | `HOMELAB_CONTROL_RELEASE_ASSET` | No | Exact archive filename when a release contains more than one archive. |
+| `HOMELAB_CONTROL_RELEASE_POLICY_URL` | No | Optional HTTPS raw GitHub URL for approved golden/LTS/previous-line rollback metadata. |
+| `HOMELAB_CONTROL_AUTO_UPDATE_MODE` | No | `off` (default), `hotfix`, `daily` or `weekly`; schedules are opt-in from `/settings`, and beta schedules are additionally locked behind the live-patch acknowledgement. |
+| `HOMELAB_CONTROL_AUTO_UPDATE_HOUR` | No | Local hour (0–23, default 4) used by an enabled schedule. |
 | `MEDIA_REQUIRED_PROVIDERS` | No | Explicit media contract, e.g. `jellyfin,seerr,sonarr`. |
 | `MEDIA_STACK_PROFILE` | No | `auto`, `full`, `minimal`, or `none`. |
 | `NETWORK_REQUIRED_PROVIDERS` | No | Explicit DNS/network contract. |
@@ -44,8 +48,14 @@ or validated by the application before use.
 For local Compose, `APP_DATA_DIR` stores the bot and agent state,
 `HOST_DATA_PATH` is the read-only application-data view, `MEDIA_PATH` is the
 read-only media view, and `MAINTENANCE_DIR` is the only writable host bridge
-directory. Change these paths before the first start when the defaults do not
-match the host.
+directory. The bot runtime settings overlay is `${APP_DATA_DIR}/bot/settings.json`;
+set `HOMELAB_CONTROL_SETTINGS_FILE` to that host-side path in the root bridge
+configuration when you want reset/restore to include it. Change these paths
+before the first start when the defaults do not match the host. Keep the
+optional bot config path separate from `HOMELAB_CONTROL_ENV_FILE` when
+possible: a settings reset clears the configured config file after backing it
+up, while the Compose environment file supplies the credentials needed to
+recreate the containers.
 
 The root bridge reads its own `/etc/homelab-control/maintenance.env`. Its
 `HOMELAB_CONTROL_MAINTENANCE_DIR` must match `MAINTENANCE_DIR`, and its
@@ -62,7 +72,10 @@ sizes in the rollback-options view and can choose a recommended release line
 or an exact version from the selector. The root bridge re-validates the
 repository, tag,
 download path, archive layout and digest before rebuilding only the control
-agent and bot.
+agent and bot. The public `release-policy.json` file can mark golden, LTS and
+previous-major-line versions; it is advisory metadata only and the exact
+release archive and digest are still checked by the bridge. A release policy
+does not enable self-updates.
 
 ## Secret handling
 

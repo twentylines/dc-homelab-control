@@ -14,8 +14,13 @@ A private, read-first Discord control panel for a Docker homelab. It discovers t
 - Wake-on-LAN for arbitrary trusted devices with saved favourites
 - Admin and guest whitelists; service controls are opt-out by default (opt-in is available for strict review)
 
-The Discord bot never receives the Docker socket. A small internal agent performs bounded, read-only checks and explicit allowlisted actions. The Docker socket is mounted only into that agent because Docker lifecycle operations require it; the agent drops Linux capabilities, runs read-only, refuses protected control-plane containers, and records mutations.
+The Discord bot never receives the Docker socket. A small internal agent performs bounded, read-only checks and tightly bounded lifecycle actions. The Docker socket is mounted only into that agent because Docker lifecycle operations require it; the agent drops Linux capabilities, runs read-only, refuses protected control-plane containers, and records mutations.
 
-Bot release checks are read-only. `/updates` shows a newer stable GitHub release when one is available, but nothing installs automatically; an administrator must explicitly confirm the update or rollback. Only the control agent and bot are rebuilt.
+Bot release checks are read-only. `/updates` shows a newer release from the
+selected GitHub channel when one is available. Bot installation is manual by
+default; an administrator may explicitly opt into a daily, weekly-stable or
+daily-hotfix schedule in `/settings`. Only the control agent and bot are
+rebuilt, and each replacement must pass health checks before it is reported
+complete.
 
 The app is designed for a custom Runtipi app or a community app store. Set only the integrations you use; discovery handles the rest. Crafty and the Jellyfin + Seerr/Sonarr/Radarr/Prowlarr/qBittorrent shape are the best-tested path; unsupported or absent dashboards stay out of the UI.

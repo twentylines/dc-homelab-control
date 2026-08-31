@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal, allowlisted controller for the Homelab Control bot."""
+"""Read-first controller for the Homelab Control bot."""
 
 from __future__ import annotations
 
@@ -74,12 +74,18 @@ HOST_SSD_LABEL = os.getenv("HOST_SSD_LABEL", "Application data").strip() or "App
 HOST_MEDIA_PATH = Path(os.getenv("HOST_MEDIA_PATH", "/host/media"))
 HOST_MEDIA_LABEL = os.getenv("HOST_MEDIA_LABEL", "Media").strip() or "Media"
 HOST_GATEWAY = os.getenv("HOST_GATEWAY", "host.docker.internal")
+HOST_RESOLV_CONF_FILE = Path(os.getenv("HOST_RESOLV_CONF_FILE", "/host/etc/resolv.conf"))
 DATA_DIR = Path(os.getenv("AGENT_DATA_DIR", "/data"))
 SCRUTINY_URL = os.getenv("SCRUTINY_URL", f"http://{HOST_GATEWAY}:8085/api/summary")
-JELLYFIN_BASE_URL = (os.getenv("JELLYFIN_BASE_URL", "").strip() or f"http://{HOST_GATEWAY}:8091").rstrip("/")
+# Keep provider URLs empty unless the operator explicitly supplies one.  When
+# they are blank, the request helpers below discover the matching Docker
+# container and use its published port (or its internal service name).  The
+# old fixed Jellyfin :8091 fallback made a standard :8096 installation look
+# unavailable and was especially confusing when a homelab used a custom port.
+JELLYFIN_BASE_URL = os.getenv("JELLYFIN_BASE_URL", "").strip().rstrip("/")
 JELLYFIN_API_KEY = os.getenv("JELLYFIN_API_KEY", "").strip()
 JELLYFIN_USER_ID = os.getenv("JELLYFIN_USER_ID", "").strip()
-PLEX_BASE_URL = (os.getenv("PLEX_BASE_URL", "").strip() or f"http://{HOST_GATEWAY}:32400").rstrip("/")
+PLEX_BASE_URL = os.getenv("PLEX_BASE_URL", "").strip().rstrip("/")
 PLEX_TOKEN = os.getenv("PLEX_TOKEN", "").strip()
 RUNTIPI_ENV_FILE = Path(os.getenv("RUNTIPI_ENV_FILE", "/run/secrets/runtipi-env"))
 MAINTENANCE_DIR = Path(os.getenv("MAINTENANCE_DIR", "/host/maintenance"))
@@ -93,9 +99,12 @@ RUNTIPI_UPDATE_ALL_TIMEOUT = max(120, min(780, int(os.getenv("RUNTIPI_UPDATE_ALL
 RUNTIPI_PROTECTED_APP_IDS = {"homelab-control", "hades-control", "backend", "runtipi"}
 CONTROL_BOT_NAME = os.getenv("CONTROL_BOT_NAME", "Homelab Control").strip() or "Homelab Control"
 HOMELAB_CONTROL_REPOSITORY = os.getenv("HOMELAB_CONTROL_REPOSITORY", "").strip()
-HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.3.22c").strip() or "0.3.22c"
+HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.4.0").strip() or "0.4.0"
 HOMELAB_CONTROL_RELEASE_CHANNEL = os.getenv("HOMELAB_CONTROL_RELEASE_CHANNEL", "stable").strip().lower() or "stable"
+if HOMELAB_CONTROL_RELEASE_CHANNEL not in {"stable", "beta"}:
+    HOMELAB_CONTROL_RELEASE_CHANNEL = "stable"
 HOMELAB_CONTROL_RELEASE_ASSET = os.getenv("HOMELAB_CONTROL_RELEASE_ASSET", "").strip()
+HOMELAB_CONTROL_RELEASE_POLICY_URL = os.getenv("HOMELAB_CONTROL_RELEASE_POLICY_URL", "").strip()
 BOT_RELEASE_STATUS_FILE = MAINTENANCE_DIR / "bot-release.json"
 BOT_RELEASE_CACHE_TTL = max(30.0, min(900.0, float(os.getenv("HOMELAB_CONTROL_RELEASE_CACHE_TTL", "300"))))
 BOT_RELEASE_TIMEOUT = max(3.0, min(30.0, float(os.getenv("HOMELAB_CONTROL_RELEASE_TIMEOUT", "10"))))
@@ -144,6 +153,10 @@ _runtipi_update_lock = threading.Lock()
 _bot_release_cache_lock = threading.Lock()
 _bot_release_cache_timestamp = 0.0
 _bot_release_cache_value = None
+_release_policy_cache_lock = threading.Lock()
+_release_policy_cache_timestamp = 0.0
+_release_policy_cache_value = None
+_release_policy_cache_key = None
 JELLYFIN_CACHE_TTL = 15.0
 _jellyfin_cache_lock = threading.Lock()
 _jellyfin_cache_timestamp = 0.0
@@ -178,7 +191,7 @@ SERVICES = {
 
 
 MEDIA_PROBES = {
-    "Jellyfin": 8091,
+    "Jellyfin": 8096,
     "Seerr": 5055,
     "Sonarr": 8989,
     "Radarr": 7878,
@@ -289,7 +302,7 @@ SERVICE_PROBES = {
     "home-assistant": {"port": 8123, "scheme": "http", "host_network": True},
     "homebridge": {"port": 8581, "scheme": "http", "host_network": True},
     "jackett": {"port": 9117, "scheme": "http"},
-    "jellyfin": {"port": 8091, "scheme": "http"},
+    "jellyfin": {"port": 8096, "scheme": "http"},
     "paperless": {"port": 8012, "scheme": "http"},
     "prowlarr": {"port": 9696, "scheme": "http"},
     "qbittorrent": {"port": 8133, "scheme": "http"},
@@ -314,6 +327,103 @@ MEDIA_RESOURCES_CACHE_TTL = 5.0
 _media_resources_cache_lock = threading.Lock()
 _media_resources_cache_timestamp = 0.0
 _media_resources_cache_value = None
+
+
+def _default_gateway():
+    """Read the host's default gateway without exposing it in user output."""
+    route_file = HOST_PROC / "net/route"
+    try:
+        lines = route_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        lines = []
+    for line in lines[1:]:
+        fields = line.split()
+        if len(fields) < 4 or fields[1] != "00000000":
+            continue
+        try:
+            raw = struct.pack("<L", int(fields[2], 16))
+            gateway = socket.inet_ntoa(raw)
+        except (OSError, ValueError, struct.error):
+            continue
+        if gateway != "0.0.0.0":
+            return gateway
+    try:
+        return socket.gethostbyname(HOST_GATEWAY)
+    except OSError:
+        return ""
+
+
+def _dns_query(server: str, timeout: float = 1.2):
+    """Measure a small read-only DNS query to one configured resolver."""
+    try:
+        address = socket.gethostbyname(server)
+        query_id = int.from_bytes(os.urandom(2), "big")
+        query = struct.pack("!HHHHHH", query_id, 0x0100, 1, 0, 0, 0)
+        query += b"\x07example\x03com\x00" + struct.pack("!HH", 1, 1)
+        started = time.monotonic()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(timeout)
+            sock.sendto(query, (address, 53))
+            response, _ = sock.recvfrom(2048)
+        if len(response) < 12 or int.from_bytes(response[:2], "big") != query_id:
+            return {"ok": False, "latency_ms": None, "detail": "invalid DNS response"}
+        return {"ok": True, "latency_ms": round((time.monotonic() - started) * 1000), "detail": "DNS query answered"}
+    except (OSError, TimeoutError, ValueError):
+        return {"ok": False, "latency_ms": None, "detail": "DNS query timed out"}
+
+
+def network_connectivity():
+    """Return bounded gateway and DNS setup checks for /ping and /network.
+
+    The agent is deliberately unprivileged, so it cannot send raw ICMP.  A
+    short DNS query is used when the gateway exposes DNS; otherwise a TCP
+    connect to common gateway service ports is the honest internal reachability
+    check.  The response contains no address, only the measured result.
+    """
+    gateway = _default_gateway()
+    gateway_result = {"configured": bool(gateway), "reachable": False, "latency_ms": None, "probe_type": None, "detail": "Default gateway unavailable"}
+    if gateway:
+        dns_result = _dns_query(gateway)
+        if dns_result["ok"]:
+            gateway_result.update({"reachable": True, "latency_ms": dns_result["latency_ms"], "probe_type": "DNS query", "detail": "Gateway answered a DNS query"})
+        else:
+            for port in (53, 80, 443):
+                started = time.monotonic()
+                try:
+                    with socket.create_connection((gateway, port), timeout=1.2):
+                        gateway_result.update({"reachable": True, "latency_ms": round((time.monotonic() - started) * 1000), "probe_type": f"TCP {port}", "detail": "Gateway accepted an internal TCP connection"})
+                        break
+                except OSError:
+                    continue
+            if not gateway_result["reachable"]:
+                gateway_result["detail"] = "Gateway discovered, but no internal probe answered"
+
+    nameservers = []
+    try:
+        lines = HOST_RESOLV_CONF_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        match = re.match(r"^\s*nameserver\s+(\S+)", line, re.IGNORECASE)
+        if match:
+            server = match.group(1).strip()
+            if server and server not in nameservers and len(nameservers) < 6:
+                nameservers.append(server)
+    dns_checks = [_dns_query(server) for server in nameservers]
+    dns_ok = next((result for result in dns_checks if result.get("ok")), None)
+    dns_result = {
+        "configured": bool(nameservers),
+        "nameserver_count": len(nameservers),
+        "reachable": bool(dns_ok),
+        "latency_ms": dns_ok.get("latency_ms") if dns_ok else None,
+        "probe_type": "DNS query" if dns_ok else None,
+        "detail": "DNS is configured and answering" if dns_ok else "DNS nameservers are configured but did not answer" if nameservers else "No nameserver is configured",
+    }
+    return {
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "gateway": gateway_result,
+        "dns": dns_result,
+    }
 
 
 REDACTIONS = [
@@ -570,6 +680,70 @@ def _provider_rows(definitions, entries):
             "port_source": port_source,
         })
     return rows
+
+
+def _provider_endpoint_candidates(provider_id, configured_url="", default_port=None):
+    """Return safe endpoint candidates for an optional local provider.
+
+    A provider URL supplied by the operator is always preferred.  Otherwise
+    discover the matching Docker container at request time: a published port
+    is reached through the host gateway, while an unpublished service is
+    tried by its Docker DNS name on the shared Runtipi network.  The final
+    host-gateway fallback keeps host-installed services working when no
+    container metadata is available.  These candidates are internal only and
+    are never returned in Discord responses.
+    """
+    candidates = []
+
+    def add(value):
+        value = str(value or "").strip().rstrip("/")
+        if not value:
+            return
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return
+        if value not in candidates:
+            candidates.append(value)
+
+    # Explicit configuration wins and must not be silently replaced by a
+    # discovered endpoint if the operator intentionally chose another host.
+    add(configured_url)
+    if candidates:
+        return candidates
+
+    provider_id = _normalise_provider_id(provider_id)
+    definitions = (*MEDIA_PROVIDER_DEFINITIONS, *NETWORK_PROVIDER_DEFINITIONS)
+    definition = next((item for item in definitions if item.get("id") == provider_id), None)
+    if definition:
+        try:
+            entries = containers()
+        except Exception:
+            entries = []
+        matches = [entry for entry in entries if _container_match_score(entry, definition.get("patterns", ()))]
+        matches.sort(key=lambda entry: (
+            _container_match_score(entry, definition.get("patterns", ())),
+            entry.get("State") == "running",
+            bool(_container_public_ports(entry)),
+        ), reverse=True)
+        container = matches[0] if matches else None
+        if container:
+            port, source = _provider_port_info(container, definition)
+            if source == "published" and port:
+                add(f"http://{HOST_GATEWAY}:{port}")
+            # Agent and application containers normally share tipi_main_network
+            # (or the local Compose bridge).  A service name therefore works
+            # even when the app deliberately publishes no host port.  Keep the
+            # name strict so Docker metadata can never become an URL target.
+            names = container_names(container)
+            name = names[0] if names else _container_service_name(container)
+            if name and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", name) and definition.get("default_port"):
+                add(f"http://{name}:{int(definition['default_port'])}")
+            if source == "default" and definition.get("default_port"):
+                add(f"http://{HOST_GATEWAY}:{int(definition['default_port'])}")
+
+    if default_port:
+        add(f"http://{HOST_GATEWAY}:{int(default_port)}")
+    return candidates
 
 
 def _control_identity(container):
@@ -1688,15 +1862,23 @@ def _plex_request(path, params=None):
     query.setdefault("X-Plex-Product", "Homelab Control")
     query.setdefault("X-Plex-Version", "0.1.0")
     encoded = urlencode(query)
-    url = f"{PLEX_BASE_URL}{path}{'?' + encoded if encoded else ''}"
-    request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "HomelabControl/0.1"})
-    try:
-        with urllib.request.urlopen(request, timeout=4) as response:
-            return json.load(response), None
-    except urllib.error.HTTPError as exc:
-        return None, "unauthorized" if exc.code in {401, 403} else f"http_{exc.code}"
-    except (OSError, ValueError, urllib.error.URLError):
-        return None, "unavailable"
+    last_error = "unavailable"
+    for base_url in _provider_endpoint_candidates("plex", PLEX_BASE_URL, 32400):
+        url = f"{base_url}{path}{'?' + encoded if encoded else ''}"
+        request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "HomelabControl/0.1"})
+        try:
+            with urllib.request.urlopen(request, timeout=4) as response:
+                return json.load(response), None
+        except urllib.error.HTTPError as exc:
+            # Authentication and an explicit HTTP response are authoritative;
+            # retrying another discovered endpoint could hide a bad token or
+            # make the result appear healthy on a different Plex instance.
+            return None, "unauthorized" if exc.code in {401, 403} else f"http_{exc.code}"
+        except (OSError, ValueError, urllib.error.URLError) as exc:
+            last_error = "unavailable"
+            if isinstance(exc, ValueError):
+                last_error = "invalid_response"
+    return None, last_error
 
 
 def _plex_sessions(payload):
@@ -1965,22 +2147,30 @@ def _jellyfin_item_title(item):
 
 def _jellyfin_request(path, params=None):
     query = urlencode(params or {})
-    url = f"{JELLYFIN_BASE_URL}{path}{'?' + query if query else ''}"
-    request = urllib.request.Request(
-        url,
-        headers={
-            "X-Emby-Token": JELLYFIN_API_KEY,
-            "Accept": "application/json",
-            "User-Agent": "HomelabControl/1.0",
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=4) as response:
-            return json.load(response), None
-    except urllib.error.HTTPError as exc:
-        return None, "unauthorized" if exc.code in {401, 403} else f"http_{exc.code}"
-    except (OSError, ValueError, urllib.error.URLError):
-        return None, "unavailable"
+    last_error = "unavailable"
+    for base_url in _provider_endpoint_candidates("jellyfin", JELLYFIN_BASE_URL, 8096):
+        url = f"{base_url}{path}{'?' + query if query else ''}"
+        request = urllib.request.Request(
+            url,
+            headers={
+                "X-Emby-Token": JELLYFIN_API_KEY,
+                "Accept": "application/json",
+                "User-Agent": "HomelabControl/1.0",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=4) as response:
+                return json.load(response), None
+        except urllib.error.HTTPError as exc:
+            # Authentication and an explicit HTTP response are authoritative;
+            # retrying another discovered endpoint could hide a bad key or
+            # query a different Jellyfin instance.
+            return None, "unauthorized" if exc.code in {401, 403} else f"http_{exc.code}"
+        except (OSError, ValueError, urllib.error.URLError) as exc:
+            last_error = "unavailable"
+            if isinstance(exc, ValueError):
+                last_error = "invalid_response"
+    return None, last_error
 
 
 def _jellyfin_session_details(session, item):
@@ -2518,20 +2708,89 @@ def _release_version_key(value):
         numbers = tuple(int(part) for part in base.split("."))
         # Compact letter hotfixes are published after the matching stable
         # patch and are ordered alphabetically (…a, …b, …c).
-        return (*numbers, 2, normalised[-1].lower())
+        return (*numbers, 2, ((1, normalised[-1].lower()),))
     base, _, prerelease = normalised.partition("-")
     numbers = tuple(int(part) for part in base.split("."))
-    # Stable releases are newer than a pre-release of the same version.  The
-    # exact ordering between two pre-release identifiers is deliberately not
-    # used because the stable channel never advertises them.
-    return (*numbers, 1 if not prerelease else 0, prerelease or "")
+    if not prerelease:
+        return (*numbers, 1, ())
+    # Keep beta/rc ordering semantic rather than lexical: beta.10 must sort
+    # after beta.2. Numeric identifiers sort before text identifiers and a
+    # shorter identifier list sorts before a longer equal prefix, as required
+    # by SemVer. The kind marker keeps every final tuple comparable in Python.
+    tokens = []
+    for token in prerelease.split("."):
+        tokens.append((0, int(token)) if token.isdigit() else (1, token.lower()))
+    return (*numbers, 0, tuple(tokens))
 
 
-def _github_release_payload(repository):
+def _release_line(value):
+    """Return the numeric patch line used for safe rollback grouping."""
+    normalised = _release_version(value)
+    if not normalised:
+        return ""
+    return normalised.split("-", 1)[0].rstrip("abcdefghijklmnopqrstuvwxyz")
+
+
+def _github_release_policy(repository):
+    """Fetch optional, public rollback approvals without trusting them blindly."""
+    global _release_policy_cache_timestamp, _release_policy_cache_value, _release_policy_cache_key
+    now = time.monotonic()
+    cache_key = f"{repository}:{HOMELAB_CONTROL_RELEASE_POLICY_URL}"
+    with _release_policy_cache_lock:
+        if _release_policy_cache_key == cache_key and _release_policy_cache_value is not None and now - _release_policy_cache_timestamp < BOT_RELEASE_CACHE_TTL:
+            return json.loads(json.dumps(_release_policy_cache_value))
+    if not _REPOSITORY_RE.fullmatch(repository):
+        return {}
+    # Unit tests and local fixtures conventionally use example/* repositories;
+    # do not make a network call for those synthetic values.
+    if repository.lower().startswith("example/"):
+        return {}
+    url = HOMELAB_CONTROL_RELEASE_POLICY_URL or f"https://raw.githubusercontent.com/{repository}/main/release-policy.json"
+    if not url.startswith("https://raw.githubusercontent.com/"):
+        return {}
+    try:
+        request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "Homelab-Control-release-check"})
+        with urllib.request.urlopen(request, timeout=BOT_RELEASE_TIMEOUT) as response:
+            body = response.read(64 * 1024 + 1)
+        if len(body) > 64 * 1024:
+            return {}
+        payload = json.loads(body.decode("utf-8"))
+    except (OSError, ValueError, urllib.error.URLError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    clean = {"schema": 1}
+    for key in ("golden", "lts", "last_major"):
+        value = _release_version(payload.get(key))
+        if value:
+            clean[key] = value
+    approved = []
+    for value in payload.get("approved", []) if isinstance(payload.get("approved"), list) else []:
+        version = _release_version(value)
+        if version and version not in approved:
+            approved.append(version)
+    clean["approved"] = approved[:12]
+    with _release_policy_cache_lock:
+        _release_policy_cache_timestamp = now
+        _release_policy_cache_value = clean
+        _release_policy_cache_key = cache_key
+    return json.loads(json.dumps(clean))
+
+
+def _release_channel_allows(payload, channel=None):
+    if not isinstance(payload, dict) or payload.get("draft"):
+        return False
+    selected = channel if channel in {"stable", "beta"} else HOMELAB_CONTROL_RELEASE_CHANNEL
+    # Beta is additive: it receives every stable release as well as eligible
+    # pre-releases. Stable remains the conservative pre-release-free stream.
+    return selected == "beta" or not bool(payload.get("prerelease"))
+
+
+def _github_release_payload(repository, channel=None):
     if not _REPOSITORY_RE.fullmatch(repository):
         raise ValueError("GitHub repository must use owner/repository form")
     request = urllib.request.Request(
-        f"https://api.github.com/repos/{repository}/releases/latest",
+        f"https://api.github.com/repos/{repository}/releases?per_page=30",
         headers={
             "Accept": "application/vnd.github+json",
             "User-Agent": "Homelab-Control-release-check",
@@ -2546,9 +2805,21 @@ def _github_release_payload(repository):
     if len(body) > 2 * 1024 * 1024:
         raise RuntimeError("GitHub release metadata is too large")
     payload = json.loads(body.decode("utf-8"))
-    if not isinstance(payload, dict):
+    if not isinstance(payload, list):
         raise RuntimeError("GitHub returned an unexpected release response")
-    return payload
+    candidates = []
+    for release in payload:
+        if not _release_channel_allows(release, channel):
+            continue
+        version = _release_version(release.get("tag_name"))
+        key = _release_version_key(version)
+        if version and key:
+            candidates.append((key, release))
+    if not candidates:
+        stream = "beta" if (channel or HOMELAB_CONTROL_RELEASE_CHANNEL) == "beta" else "stable"
+        raise RuntimeError(f"GitHub has no safe {stream} release tag")
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
 
 
 def _github_releases_payload(repository):
@@ -2576,18 +2847,26 @@ def _github_releases_payload(repository):
     return [entry for entry in payload if isinstance(entry, dict)]
 
 
-def _github_rollback_options(repository, current):
+def _github_rollback_options(repository, current, channel=None):
     """Return bounded, newest-first earlier releases with verified archives."""
     current_key = _release_version_key(current)
     if not current_key:
         return [], "The installed bot version is not a safe semantic version"
     releases = _github_releases_payload(repository)
+    policy = _github_release_policy(repository)
+    approved_roles = {}
+    for role, key in (("golden", "golden"), ("lts", "lts"), ("last_major", "last_major")):
+        version = policy.get(key)
+        if version:
+            approved_roles[version] = role
+    for version in policy.get("approved", []):
+        approved_roles.setdefault(version, "approved")
     candidates = []
     seen_versions = set()
     for release in releases:
         if release.get("draft"):
             continue
-        if HOMELAB_CONTROL_RELEASE_CHANNEL == "stable" and release.get("prerelease"):
+        if not _release_channel_allows(release, channel):
             continue
         version = _release_version(release.get("tag_name"))
         version_key = _release_version_key(version)
@@ -2608,27 +2887,65 @@ def _github_rollback_options(repository, current):
             "asset_url": asset.get("url"),
             "asset_digest": asset.get("digest"),
             "asset_size": asset.get("size"),
+            "release_line": _release_line(version),
+            "approval": approved_roles.get(version),
         }))
     if not candidates:
         return [], "No earlier GitHub release with a verified source archive was found"
     candidates.sort(key=lambda item: item[0], reverse=True)
-    return [candidate for _key, candidate in candidates[:25]], None
+    # Keep every verified compact hotfix in the currently installed numeric
+    # line so a bad letter release can be selected precisely. For older lines,
+    # expose only the newest verified release; this keeps the selector useful
+    # on a long-lived deployment instead of listing many near-duplicates.
+    current_line = _release_line(current)
+    grouped = []
+    seen_older_lines = set()
+    for _key, candidate in candidates:
+        line = candidate.get("release_line") or _release_line(candidate.get("version"))
+        if line != current_line:
+            if line in seen_older_lines:
+                continue
+            seen_older_lines.add(line)
+        grouped.append(candidate)
+        if len(grouped) >= 25:
+            break
+    return grouped, None
 
 
-def _github_previous_release(repository, current):
+def _github_previous_release(repository, current, channel=None):
     """Find the newest earlier stable release with one verified archive."""
-    options, detail = _github_rollback_options(repository, current)
+    options, detail = _github_rollback_options(repository, current, channel)
     return (options[0] if options else None), detail
 
 
-def _github_rollback_fields(repository, current, local_available=False, local_version=None):
+def _github_rollback_fields(repository, current, local_available=False, local_version=None, channel=None):
     """Build rollback fields without coupling them to the latest-release check."""
     try:
-        options, detail = _github_rollback_options(repository, current)
+        options, detail = _github_rollback_options(repository, current, channel)
         previous = options[0] if options else None
     except (OSError, urllib.error.URLError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         options, previous = [], None
         detail = f"Previous GitHub releases could not be checked ({exc.__class__.__name__})"
+    current_line = _release_line(current)
+    # The quick list is deliberately conservative: one newest verified release
+    # per older numeric patch line, plus explicitly approved golden/LTS lines.
+    quick = []
+    seen_lines = set()
+    for role in ("golden", "lts", "last_major"):
+        candidate = next((option for option in options if option.get("approval") == role), None)
+        if candidate and candidate.get("version") not in {item.get("version") for item in quick}:
+            quick.append({**candidate, "quick_role": role})
+    for option in options:
+        line = option.get("release_line") or _release_line(option.get("version"))
+        if line == current_line or line in seen_lines:
+            continue
+        seen_lines.add(line)
+        if option.get("version") in {item.get("version") for item in quick}:
+            continue
+        quick.append({**option, "quick_role": "previous-line"})
+        if len(quick) >= 6:
+            break
+    policy = _github_release_policy(repository)
     return {
         "rollback_available": bool(local_available or previous),
         "rollback_source": "local" if local_available else "github" if previous else None,
@@ -2638,6 +2955,8 @@ def _github_rollback_fields(repository, current, local_available=False, local_ve
         "github_rollback": previous,
         "rollback_options": options,
         "github_rollback_options": options,
+        "rollback_quick_options": quick[:6],
+        "rollback_policy": policy,
         "rollback_detail": detail,
         "github_rollback_detail": detail,
     }
@@ -2695,6 +3014,7 @@ def _safe_bot_release_state():
         safe[key] = redact(str(raw.get(key)))[:240] if key == "detail" else str(raw.get(key))[:160]
     safe["rollback_available"] = bool(raw.get("rollback_available"))
     safe["update_supported"] = bool(raw.get("update_supported"))
+    safe["automatic"] = bool(raw.get("automatic"))
     events = []
     for event in raw.get("events", []) if isinstance(raw.get("events"), list) else []:
         if isinstance(event, dict) and event.get("message"):
@@ -2703,23 +3023,25 @@ def _safe_bot_release_state():
     return safe
 
 
-def bot_release_status(force=False):
+def bot_release_status(force=False, channel=None):
     """Check the configured public GitHub release without changing the host."""
     global _bot_release_cache_timestamp, _bot_release_cache_value
     state = _safe_bot_release_state()
     repository = HOMELAB_CONTROL_REPOSITORY
+    release_channel = channel if channel in {"stable", "beta"} else HOMELAB_CONTROL_RELEASE_CHANNEL
     state_current = state.get("current_version")
     installed_version = state_current if state.get("phase") in {"complete", "rolled_back"} and _release_version(state_current) else HOMELAB_CONTROL_VERSION
     base = {
         "available": True,
         "configured": bool(repository),
         "repository": repository[:140],
-        "channel": HOMELAB_CONTROL_RELEASE_CHANNEL,
+        "channel": release_channel,
         "current": _release_version(installed_version) or str(installed_version)[:80],
         "latest": None,
         "update_available": False,
         "asset_verified": False,
         "update_supported": bool(state.get("update_supported")),
+        "automatic": bool(state.get("automatic")),
         "rollback_available": bool(state.get("rollback_available")),
         "rollback_version": state.get("previous_version"),
         "rollback_source": state.get("rollback_source") or ("local" if state.get("rollback_available") else None),
@@ -2743,24 +3065,24 @@ def bot_release_status(force=False):
         return base
     now = time.monotonic()
     with _bot_release_cache_lock:
-        if not force and _bot_release_cache_value is not None and now - _bot_release_cache_timestamp < BOT_RELEASE_CACHE_TTL:
+        if channel is None and not force and _bot_release_cache_value is not None and now - _bot_release_cache_timestamp < BOT_RELEASE_CACHE_TTL:
             cached = json.loads(json.dumps(_bot_release_cache_value))
-            cached.update({key: value for key, value in base.items() if key in {"phase", "job_id", "requested_version", "events", "rollback_available", "rollback_version", "rollback_source", "update_supported"}})
+            cached.update({key: value for key, value in base.items() if key in {"phase", "job_id", "requested_version", "events", "rollback_available", "rollback_version", "rollback_source", "update_supported", "automatic"}})
             return cached
     try:
-        payload = _github_release_payload(repository)
+        payload = _github_release_payload(repository, release_channel)
         tag = str(payload.get("tag_name") or "").strip()
         latest = _release_version(tag)
         if not latest:
             raise RuntimeError("GitHub latest release has no safe semantic version tag")
-        if HOMELAB_CONTROL_RELEASE_CHANNEL == "stable" and bool(payload.get("prerelease")):
+        if release_channel == "stable" and bool(payload.get("prerelease")):
             raise RuntimeError("The latest GitHub release is a pre-release and stable channel is enabled")
         asset, asset_detail = _release_archive_asset(payload)
         current_key = _release_version_key(base["current"])
         latest_key = _release_version_key(latest)
         update_available = bool(current_key and latest_key and latest_key > current_key)
         local_rollback = bool(base.get("rollback_available"))
-        rollback_fields = _github_rollback_fields(repository, base["current"], local_rollback, base.get("rollback_version"))
+        rollback_fields = _github_rollback_fields(repository, base["current"], local_rollback, base.get("rollback_version"), release_channel)
         result = {
             **base,
             "latest": latest,
@@ -2778,18 +3100,19 @@ def bot_release_status(force=False):
             "detail": asset_detail or ("A newer verified release is ready" if update_available else "This installation is on the latest stable release"),
         }
     except (OSError, urllib.error.URLError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
-        rollback_fields = _github_rollback_fields(repository, base["current"], bool(base.get("rollback_available")), base.get("rollback_version"))
+        rollback_fields = _github_rollback_fields(repository, base["current"], bool(base.get("rollback_available")), base.get("rollback_version"), release_channel)
         result = {**base, "available": False, **rollback_fields, "detail": str(exc)[:240]}
-    with _bot_release_cache_lock:
-        _bot_release_cache_timestamp = time.monotonic()
-        _bot_release_cache_value = result
+    if channel is None:
+        with _bot_release_cache_lock:
+            _bot_release_cache_timestamp = time.monotonic()
+            _bot_release_cache_value = result
     return json.loads(json.dumps(result))
 
 
-def updates_status(force=False):
+def updates_status(force=False, channel=None):
     """Return Runtipi and Homelab Control release status independently."""
     snapshot = runtipi_updates(force=force)
-    snapshot["bot"] = bot_release_status(force=force)
+    snapshot["bot"] = bot_release_status(force=force, channel=channel)
     return snapshot
 
 
@@ -3272,22 +3595,26 @@ def _queue_system_request(action: str, actor_id: str, actor_name: str, job_id: s
     }
 
 
-def _queue_bot_release_request(action: str, actor_id: str, actor_name: str, selected_version=None):
+def _queue_bot_release_request(action: str, actor_id: str, actor_name: str, selected_version=None, automatic: bool = False, channel=None, beta_auto_update_confirmed: bool = False):
     """Queue one guarded bot release action for the root-owned host bridge."""
     if action not in {"bot_update", "bot_rollback"}:
         raise ValueError("Unsupported bot release action")
     if not MAINTENANCE_DIR.is_dir() or not os.access(MAINTENANCE_DIR, os.W_OK):
         raise RuntimeError("The guarded bot release bridge is not installed")
+    selected_channel = channel if channel in {"stable", "beta"} else None
+    effective_channel = selected_channel or HOMELAB_CONTROL_RELEASE_CHANNEL
+    if action == "bot_update" and automatic and effective_channel == "beta" and beta_auto_update_confirmed is not True:
+        raise PermissionError("Beta automatic updates require explicit acknowledgement of the live-patch route")
     if _read_json_file(SYSTEM_REQUEST_FILE):
         raise RuntimeError("Another host maintenance request is already queued")
-    snapshot = bot_release_status(force=True)
+    snapshot = bot_release_status(force=True, channel=selected_channel)
     if snapshot.get("phase") in {"queued", "checking", "downloading", "verifying", "staging", "building", "restarting", "verifying_runtime"}:
         raise RuntimeError("A bot release action is already in progress")
     if action == "bot_update":
         if not snapshot.get("configured"):
             raise RuntimeError(snapshot.get("detail", "Configure a GitHub repository before updating the bot"))
         if not snapshot.get("update_available"):
-            raise RuntimeError("No newer stable bot release is available")
+            raise RuntimeError(f"No newer {snapshot.get('channel', 'stable')} bot release is available")
         if not snapshot.get("asset_verified"):
             raise RuntimeError(snapshot.get("detail", "The release archive has no verified SHA-256 digest"))
         if not snapshot.get("update_supported"):
@@ -3297,6 +3624,8 @@ def _queue_bot_release_request(action: str, actor_id: str, actor_name: str, sele
             "schema": 1,
             "action": action,
             "manual_confirmation": True,
+            "automatic": bool(automatic),
+            "channel": snapshot.get("channel", "stable"),
             "job_id": uuid.uuid4().hex[:24],
             "repository": snapshot.get("repository"),
             "tag": snapshot.get("tag"),
@@ -3335,6 +3664,7 @@ def _queue_bot_release_request(action: str, actor_id: str, actor_name: str, sele
             "schema": 1,
             "action": action,
             "manual_confirmation": True,
+            "automatic": False,
             "job_id": uuid.uuid4().hex[:24],
             "actor_id": sanitize_audit_value(actor_id),
             "actor_name": sanitize_audit_value(actor_name),
@@ -3380,6 +3710,38 @@ def _queue_bot_release_request(action: str, actor_id: str, actor_name: str, sele
         "version": request.get("version") or snapshot.get("rollback_version"),
         "detail": "Verified bot release queued; the host bridge will rebuild only the control containers" if action == "bot_update" else "Bot rollback queued; the host bridge will restore the previous images or fetch the verified earlier GitHub release",
     }
+
+
+def _queue_bot_maintenance_request(action: str, actor_id: str, actor_name: str, fresh: bool = False):
+    """Queue a guarded restart/recovery action for the control containers."""
+    allowed = {"bot_restart", "settings_reset", "settings_restore", "bot_repair"}
+    if action not in allowed:
+        raise ValueError("Unsupported bot maintenance action")
+    if not MAINTENANCE_DIR.is_dir() or not os.access(MAINTENANCE_DIR, os.W_OK):
+        raise RuntimeError("The guarded bot release bridge is not installed")
+    if _read_json_file(SYSTEM_REQUEST_FILE):
+        raise RuntimeError("Another host maintenance request is already queued")
+    state = _safe_bot_release_state()
+    if state.get("phase") in {"queued", "checking", "downloading", "verifying", "staging", "building", "restarting", "verifying_runtime"}:
+        raise RuntimeError("A bot maintenance action is already in progress")
+    if action in {"bot_restart", "bot_repair", "settings_restore"} and not state.get("update_supported"):
+        raise RuntimeError("The guarded host bridge is installed but its Compose deployment target is not configured")
+    request = {
+        "schema": 1,
+        "action": action,
+        "manual_confirmation": True,
+        "job_id": uuid.uuid4().hex[:24],
+        "fresh": bool(fresh),
+        "actor_id": sanitize_audit_value(actor_id),
+        "actor_name": sanitize_audit_value(actor_name),
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        _write_maintenance_request(request)
+    except OSError as exc:
+        raise RuntimeError("The bot maintenance request could not be queued") from exc
+    append_audit({"actor_id": sanitize_audit_value(actor_id), "actor_name": sanitize_audit_value(actor_name), "action": action, "service": "homelab-control", "result": "queued"})
+    return {"accepted": True, "job_id": request["job_id"], "phase": "queued", "detail": "Control maintenance queued; completion will be reported after both health checks pass"}
 
 
 def read_token():
@@ -3459,6 +3821,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"ok": True, "data": network_status()})
             elif parsed.path == "/v1/network-summary":
                 self.send_json(200, {"ok": True, "data": network_summary()})
+            elif parsed.path == "/v1/network-connectivity":
+                self.send_json(200, {"ok": True, "data": network_connectivity()})
+            elif parsed.path == "/v1/ping":
+                self.send_json(200, {"ok": True, "data": network_connectivity()})
             elif parsed.path == "/v1/minecraft":
                 self.send_json(200, {"ok": True, "data": minecraft_status()})
             elif parsed.path == "/v1/sessions":
@@ -3474,8 +3840,11 @@ class Handler(BaseHTTPRequestHandler):
                 refresh = parse_qs(parsed.query).get("refresh", ["0"])[0] == "1"
                 self.send_json(200, {"ok": True, "data": media_resources(force=refresh)})
             elif parsed.path == "/v1/updates":
-                refresh = parse_qs(parsed.query).get("refresh", ["0"])[0] == "1"
-                self.send_json(200, {"ok": True, "data": updates_status(force=refresh)})
+                query = parse_qs(parsed.query)
+                refresh = query.get("refresh", ["0"])[0] == "1"
+                requested_channel = query.get("channel", [""])[0].strip().lower()
+                channel = requested_channel if requested_channel in {"stable", "beta"} else None
+                self.send_json(200, {"ok": True, "data": updates_status(force=refresh, channel=channel)})
             elif parsed.path == "/v1/system-updates":
                 self.send_json(200, {"ok": True, "data": system_updates()})
             elif parsed.path == "/v1/audit":
@@ -3572,11 +3941,44 @@ class Handler(BaseHTTPRequestHandler):
                 selected_version = body.get("selected_version")
                 if selected_version is not None and not isinstance(selected_version, str):
                     raise ValueError("selected_version must be a string")
+                requested_channel = str(body.get("channel") or "").strip().lower()
+                if requested_channel and requested_channel not in {"stable", "beta"}:
+                    raise ValueError("channel must be stable or beta")
                 result = _queue_bot_release_request(
                     action,
                     self.headers.get("X-Discord-User-ID", "unknown"),
                     self.headers.get("X-Discord-User-Name", "unknown"),
                     selected_version,
+                    bool(body.get("automatic")),
+                    requested_channel or None,
+                    body.get("beta_auto_update_confirmed") is True,
+                )
+                self.send_json(200, {"ok": True, "data": result})
+            except PermissionError as exc:
+                self.send_json(403, {"ok": False, "error": str(exc)})
+            except ValueError as exc:
+                self.send_json(400, {"ok": False, "error": str(exc)})
+            except RuntimeError as exc:
+                self.send_json(409, {"ok": False, "error": str(exc)})
+            except Exception as exc:
+                self.send_json(500, {"ok": False, "error": exc.__class__.__name__})
+            return
+        if parsed.path in {"/v1/bot-release/restart", "/v1/bot-release/repair", "/v1/settings/reset", "/v1/settings/restore"}:
+            try:
+                body = self.json_body()
+                if parsed.path.endswith("/restart"):
+                    action = "bot_restart"
+                elif parsed.path.endswith("/repair"):
+                    action = "bot_repair"
+                elif parsed.path.endswith("/reset"):
+                    action = "settings_reset"
+                else:
+                    action = "settings_restore"
+                result = _queue_bot_maintenance_request(
+                    action,
+                    self.headers.get("X-Discord-User-ID", "unknown"),
+                    self.headers.get("X-Discord-User-Name", "unknown"),
+                    bool(body.get("fresh")),
                 )
                 self.send_json(200, {"ok": True, "data": result})
             except PermissionError as exc:

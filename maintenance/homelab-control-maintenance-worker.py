@@ -34,6 +34,10 @@ BOT_RELEASE_REPOSITORY = os.getenv("HOMELAB_CONTROL_REPOSITORY", "").strip()
 BOT_RELEASE_COMPOSE_FILE = Path(os.getenv("HOMELAB_CONTROL_COMPOSE_FILE", "")).expanduser() if os.getenv("HOMELAB_CONTROL_COMPOSE_FILE", "").strip() else None
 BOT_RELEASE_ENV_FILE = Path(os.getenv("HOMELAB_CONTROL_ENV_FILE", "")).expanduser() if os.getenv("HOMELAB_CONTROL_ENV_FILE", "").strip() else None
 BOT_RELEASE_COMPOSE_PROJECT = os.getenv("HOMELAB_CONTROL_COMPOSE_PROJECT", "").strip()
+CONTROL_CONFIG_PATH = os.getenv("HOMELAB_CONTROL_CONFIG_FILE", "").strip() or os.getenv("HOMELAB_CONTROL_ENV_FILE", "").strip()
+CONTROL_CONFIG_FILE = Path(CONTROL_CONFIG_PATH).expanduser() if CONTROL_CONFIG_PATH else None
+BOT_SETTINGS_FILE = Path(os.getenv("HOMELAB_CONTROL_SETTINGS_FILE", "").expanduser()) if os.getenv("HOMELAB_CONTROL_SETTINGS_FILE", "").strip() else None
+SETTINGS_BACKUP_ROOT = Path(os.getenv("HOMELAB_CONTROL_SETTINGS_BACKUP_ROOT", str(MAINTENANCE_DIR / "settings-backups")))
 BOT_RELEASE_MAX_ARCHIVE_BYTES = 250 * 1024 * 1024
 BOT_RELEASE_TIMEOUT_SECONDS = 1800
 BOT_RELEASE_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100}$")
@@ -284,6 +288,7 @@ def base_bot_status(existing=None):
     status.setdefault("events", [])
     status.setdefault("rollback_available", False)
     status.setdefault("update_supported", bot_update_supported())
+    status.setdefault("automatic", False)
     return status
 
 
@@ -309,10 +314,15 @@ def _release_version_key(value):
     if re.fullmatch(r"\d+\.\d+\.\d+[a-z]", normalised, re.IGNORECASE):
         base = normalised[:-1]
         numbers = tuple(int(part) for part in base.split("."))
-        return (*numbers, 2, normalised[-1].lower())
+        return (*numbers, 2, ((1, normalised[-1].lower()),))
     base, _, prerelease = normalised.partition("-")
     numbers = tuple(int(part) for part in base.split("."))
-    return (*numbers, 1 if not prerelease else 0, prerelease or "")
+    if not prerelease:
+        return (*numbers, 1, ())
+    tokens = []
+    for token in prerelease.split("."):
+        tokens.append((0, int(token)) if token.isdigit() else (1, token.lower()))
+    return (*numbers, 0, tuple(tokens))
 
 
 def docker_binary():
@@ -553,10 +563,11 @@ def stage_verified_release(status: dict, request: dict, validated):
 
 def run_bot_update(request: dict):
     status = base_bot_status(read_bot_status())
-    status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "requested_version": None, "detail": None, "events": [], "update_supported": bot_update_supported()})
+    status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "requested_version": None, "detail": None, "events": [], "update_supported": bot_update_supported(), "automatic": bool(request.get("automatic"))})
     write_bot_status(status)
     snapshot = None
     try:
+        _backup_settings_before(status, "the release update")
         validated = validated_release_request(request)
         _repository, _tag, version, asset_name, _asset_url, digest = validated
         snapshot = release_snapshot()
@@ -615,12 +626,13 @@ def run_bot_update(request: dict):
 
 def run_bot_rollback(request: dict):
     status = base_bot_status(read_bot_status())
-    status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "requested_version": None, "detail": None, "events": [], "update_supported": bot_update_supported()})
+    status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "requested_version": None, "detail": None, "events": [], "update_supported": bot_update_supported(), "automatic": False})
     write_bot_status(status)
     current = None
     restore_attempted = False
     local_restore_succeeded = False
     try:
+        _backup_settings_before(status, "the release rollback")
         snapshot = status.get("rollback_images")
         current = release_snapshot()
         if not current.get("agent_image") or not current.get("bot_image"):
@@ -721,6 +733,195 @@ def run_bot_rollback(request: dict):
         write_bot_status(status)
 
 
+def _backup_control_config():
+    """Create a private, timestamped config backup before recovery changes."""
+    if not CONTROL_CONFIG_FILE or not CONTROL_CONFIG_FILE.is_file():
+        return None
+    SETTINGS_BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
+    os.chmod(SETTINGS_BACKUP_ROOT, 0o700)
+    backup = SETTINGS_BACKUP_ROOT / f"config-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}.env"
+    shutil.copyfile(CONTROL_CONFIG_FILE, backup)
+    os.chmod(backup, 0o600)
+    return backup
+
+
+def _backup_runtime_settings():
+    """Back up the bot's writable settings overlay when the host path is configured."""
+    if not BOT_SETTINGS_FILE or not BOT_SETTINGS_FILE.is_file():
+        return None
+    SETTINGS_BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
+    os.chmod(SETTINGS_BACKUP_ROOT, 0o700)
+    backup = SETTINGS_BACKUP_ROOT / f"runtime-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}.json"
+    shutil.copyfile(BOT_SETTINGS_FILE, backup)
+    os.chmod(backup, 0o600)
+    return backup
+
+
+def _latest_config_backup():
+    if not SETTINGS_BACKUP_ROOT.is_dir():
+        return None
+    candidates = sorted(SETTINGS_BACKUP_ROOT.glob("config-*.env"), key=lambda path: path.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _latest_runtime_backup():
+    if not SETTINGS_BACKUP_ROOT.is_dir():
+        return None
+    candidates = sorted(SETTINGS_BACKUP_ROOT.glob("runtime-*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _restore_config_file(backup: Path):
+    if not CONTROL_CONFIG_FILE or not backup or not backup.is_file():
+        raise RuntimeError("No configuration backup is available")
+    CONTROL_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = CONTROL_CONFIG_FILE.with_suffix(CONTROL_CONFIG_FILE.suffix + ".tmp")
+    shutil.copyfile(backup, temporary)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, CONTROL_CONFIG_FILE)
+
+
+def _restore_runtime_settings(backup: Path):
+    if not BOT_SETTINGS_FILE or not backup or not backup.is_file():
+        raise RuntimeError("No runtime settings backup is available")
+    BOT_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = BOT_SETTINGS_FILE.with_suffix(BOT_SETTINGS_FILE.suffix + ".tmp")
+    shutil.copyfile(backup, temporary)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, BOT_SETTINGS_FILE)
+
+
+def _reset_runtime_settings():
+    if not BOT_SETTINGS_FILE:
+        return False
+    BOT_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = BOT_SETTINGS_FILE.with_suffix(BOT_SETTINGS_FILE.suffix + ".tmp")
+    temporary.write_text("{}\n", encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, BOT_SETTINGS_FILE)
+    return True
+
+
+def _reset_control_config():
+    """Clear the optional bot config atomically after its backup is created."""
+    if not CONTROL_CONFIG_FILE:
+        return False
+    CONTROL_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = CONTROL_CONFIG_FILE.with_suffix(CONTROL_CONFIG_FILE.suffix + ".tmp")
+    temporary.write_text("", encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, CONTROL_CONFIG_FILE)
+    return True
+
+
+def _backup_settings_before(status: dict, reason: str):
+    """Create private config/runtime backups before a control-plane change."""
+    config_backup = _backup_control_config()
+    runtime_backup = _backup_runtime_settings()
+    kinds = []
+    if config_backup:
+        kinds.append("configuration")
+    if runtime_backup:
+        kinds.append("runtime settings")
+    if kinds:
+        append_bot_event(status, f"Private {' + '.join(kinds)} backup created before {reason}")
+        write_bot_status(status)
+    return config_backup, runtime_backup
+
+
+def run_bot_maintenance(request: dict):
+    """Handle non-release recovery actions through the same health-checked path."""
+    action = str(request.get("action") or "")
+    status = base_bot_status(read_bot_status())
+    status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "detail": None, "events": [], "update_supported": bot_update_supported(), "automatic": False})
+    write_bot_status(status)
+    backup = None
+    runtime_backup = None
+    try:
+        if action == "settings_reset":
+            backup = _backup_control_config()
+            runtime_backup = _backup_runtime_settings()
+            config_reset = _reset_control_config()
+            runtime_reset = _reset_runtime_settings()
+            if not config_reset and not runtime_reset:
+                raise RuntimeError("No host settings paths are configured for recovery")
+            detail = "Configuration and runtime settings were cleared; a private backup was created before the reset"
+            if config_reset and BOT_RELEASE_ENV_FILE and CONTROL_CONFIG_FILE and CONTROL_CONFIG_FILE == BOT_RELEASE_ENV_FILE:
+                detail += ". The running containers were left online because this file also supplies Compose values; restore the backup before a future restart"
+            elif config_reset:
+                detail += ". The running containers remain online until the next controlled restart"
+            if not config_reset:
+                detail += "; no separate config file was configured"
+            if not runtime_reset:
+                detail += "; no runtime overlay was configured"
+            status.update({"phase": "complete", "current_version": snapshot_version(release_snapshot()), "completed_at": timestamp(), "detail": detail})
+            append_bot_event(status, "Configuration and runtime settings reset completed with private backups")
+            write_bot_status(status)
+            return
+        if action == "settings_restore":
+            backup = _backup_control_config()
+            runtime_backup = _backup_runtime_settings()
+            config_candidates = sorted(SETTINGS_BACKUP_ROOT.glob("config-*.env"), key=lambda path: path.stat().st_mtime, reverse=True)
+            runtime_candidates = sorted(SETTINGS_BACKUP_ROOT.glob("runtime-*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+            previous_config = next((path for path in config_candidates if path != backup), None)
+            previous_runtime = next((path for path in runtime_candidates if path != runtime_backup), None)
+            if previous_config:
+                _restore_config_file(previous_config)
+            if previous_runtime:
+                _restore_runtime_settings(previous_runtime)
+            if not previous_config and not previous_runtime:
+                raise RuntimeError("No previous settings backup is available")
+            append_bot_event(status, "Previous settings backup restored; recreating the control containers")
+        elif action in {"bot_restart", "bot_repair"}:
+            if action == "bot_repair" and bool(request.get("fresh")):
+                backup = _backup_control_config()
+                runtime_backup = _backup_runtime_settings()
+                if CONTROL_CONFIG_FILE:
+                    CONTROL_CONFIG_FILE.write_text("# Fresh repair requested by Homelab Control; restore the backup to keep the old pairing.\n", encoding="utf-8")
+                    os.chmod(CONTROL_CONFIG_FILE, 0o600)
+                runtime_reset = _reset_runtime_settings()
+                if not CONTROL_CONFIG_FILE and not runtime_reset:
+                    raise RuntimeError("No host settings paths are configured for fresh repair")
+                append_bot_event(status, "Fresh repair staged after backing up the current settings")
+            else:
+                append_bot_event(status, "Recreating the control containers with the current config")
+        else:
+            raise RuntimeError("Unknown bot maintenance action")
+        status["phase"] = "restarting"
+        write_bot_status(status)
+        command = compose_base_command() + ["up", "-d", "--force-recreate", "--no-deps", "agent", "bot"]
+        if not run_bot_command(status, command, "Starting the repaired control containers"):
+            raise RuntimeError("The control containers could not be started")
+        status["phase"] = "verifying_runtime"
+        write_bot_status(status)
+        if not wait_control_health(status):
+            raise RuntimeError("The repaired control containers did not become healthy")
+        status.update({"phase": "complete", "current_version": snapshot_version(release_snapshot()), "completed_at": timestamp(), "detail": "Control recovery completed and both health checks passed"})
+        append_bot_event(status, "Control recovery completed and verified")
+        write_bot_status(status)
+    except Exception as exc:
+        # A failed fresh repair must not strand a working deployment. Restore
+        # the exact pre-action config and report the recovery honestly.
+        restored = False
+        if backup and CONTROL_CONFIG_FILE and CONTROL_CONFIG_FILE.is_file():
+            try:
+                _restore_config_file(backup)
+                restored = True
+            except Exception:
+                pass
+        if runtime_backup and BOT_SETTINGS_FILE and BOT_SETTINGS_FILE.is_file():
+            try:
+                _restore_runtime_settings(runtime_backup)
+                restored = True
+            except Exception:
+                pass
+        if restored:
+            append_bot_event(status, "Recovery failed; the pre-action settings backup was restored")
+        elif backup or runtime_backup:
+            append_bot_event(status, "Recovery failed and the settings backup could not be restored automatically")
+        status["phase"] = "failed"
+        status["detail"] = clean_line(str(exc), 240)
+        write_bot_status(status)
 def base_status(existing=None):
     status = dict(existing or {})
     status["kind"] = "host"
@@ -873,6 +1074,7 @@ BOT_STATUS_FIELDS = {
     "rollback_source",
     "rollback_images",
     "rollback_available",
+    "automatic",
 }
 
 
@@ -947,6 +1149,15 @@ def main():
                     bot_status["phase"] = "failed"
                     bot_status["detail"] = "Bot rollback refused because an administrator confirmation marker was missing"
                     append_bot_event(bot_status, "Automatic bot rollback request refused")
+                    write_bot_status(bot_status)
+            elif action in {"bot_restart", "bot_repair", "settings_reset", "settings_restore"}:
+                if request.get("manual_confirmation") is True:
+                    run_bot_maintenance(request)
+                else:
+                    bot_status = base_bot_status(read_bot_status())
+                    bot_status["phase"] = "failed"
+                    bot_status["detail"] = "Bot maintenance refused because an administrator confirmation marker was missing"
+                    append_bot_event(bot_status, "Automatic bot maintenance request refused")
                     write_bot_status(bot_status)
             else:
                 status = base_status(read_json(STATUS_FILE))

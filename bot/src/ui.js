@@ -131,6 +131,207 @@ export function base(title, description = '', footerNote = '') {
   return embed;
 }
 
+export function postUpdateNoticeEmbed(notice = {}) {
+  const version = safeUpdateText(notice.version || 'the new version', 40);
+  const previous = notice.previous ? ` (from **${safeUpdateText(notice.previous, 40)}**)` : '';
+  return base(
+    `${botName()} // update complete`,
+    `🟢 **Back online**\nThe scheduled bot update passed both control health checks and version **${version}** is running${previous}.`,
+    'Automatic update · shown once after restart',
+  ).setColor(colors.ok);
+}
+
+function weeklyPair(used, total) {
+  const usedNumber = weeklyNumber(used);
+  const totalNumber = weeklyNumber(total);
+  if (usedNumber == null || totalNumber == null) return 'not reported';
+  const usedLabel = bytes(used);
+  const totalLabel = bytes(total);
+  const usedMatch = usedLabel.match(/^(.+)\s([^\s]+)$/);
+  const totalMatch = totalLabel.match(/^(.+)\s([^\s]+)$/);
+  if (usedMatch && totalMatch && usedMatch[2] === totalMatch[2]) {
+    return `${usedMatch[1]} / ${totalMatch[1]} ${totalMatch[2]}`;
+  }
+  return `${usedLabel} / ${totalLabel}`;
+}
+
+function weeklyNumber(value) {
+  if (value == null || value === '' || typeof value === 'boolean') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function weeklyDateLabel(timestamp) {
+  const date = new Date(timestamp || '');
+  if (!Number.isFinite(date.getTime())) return 'just now';
+  try {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+      timeZone: config.timeZone,
+      day: 'numeric',
+      month: 'numeric',
+      year: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(date).filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
+    return `${Number(parts.day)}/${Number(parts.month)}/${parts.year}, ${parts.hour}:${parts.minute}`;
+  } catch {
+    return 'just now';
+  }
+}
+
+function weeklySystemValue(data = {}) {
+  const cpuValue = weeklyNumber(data.cpu_percent);
+  const loadValue = Array.isArray(data.load) ? weeklyNumber(data.load[0]) : null;
+  const temperatureValue = weeklyNumber(data.temperature_c);
+  const cpu = cpuValue == null ? 'not reported' : `${cpuValue.toFixed(0)}%`;
+  const load = loadValue == null ? '—' : loadValue.toFixed(2);
+  const temperature = temperatureValue == null ? '—' : `${temperatureValue.toFixed(0)}°C`;
+  const memory = data.memory || {};
+  const memoryTotal = weeklyNumber(memory.total);
+  const memoryUsed = weeklyNumber(memory.used);
+  const memoryPercentValue = memoryTotal != null && memoryTotal > 0 && memoryUsed != null
+    ? `${((memoryUsed / memoryTotal) * 100).toFixed(0)}%`
+    : '—';
+  const swapTotal = weeklyNumber(memory.swap_total);
+  const swap = swapTotal != null && swapTotal > 0 ? weeklyPair(memory.swap_used, swapTotal) : 'Disabled';
+  return `**CPU** ${cpu} · **load** ${load} · ${temperature}\n**Memory** ${weeklyPair(memory.used, memory.total)} · ${memoryPercentValue}\n**Swap** ${swap}`;
+}
+
+function weeklyRuntimeValue(data = {}) {
+  const uptime = weeklyNumber(data.uptime_seconds);
+  const running = weeklyNumber(data.containers?.running);
+  const total = weeklyNumber(data.containers?.total);
+  return `**Uptime** ${uptime == null ? 'not reported' : duration(uptime)}\n**Containers** ${running == null || total == null ? 'not reported' : `${running}/${total}`}`;
+}
+
+function weeklyStorageValue(data = {}) {
+  const disks = Array.isArray(data.storage) ? data.storage.filter((disk) => disk && typeof disk === 'object') : [];
+  if (!disks.length) return '⚪ Storage data not reported';
+  const lines = disks.slice(0, 6).map((disk) => {
+    const total = weeklyNumber(disk.total);
+    const used = weeklyNumber(disk.used);
+    const reportedPercent = weeklyNumber(disk.percent);
+    const percent = reportedPercent != null
+      ? reportedPercent
+      : total != null && total > 0 && used != null ? (used / total) * 100 : null;
+    const meter = percent == null ? '▱▱▱▱▱▱▱▱▱▱ not reported' : bar(percent);
+    return `**${safeUpdateText(disk.label || 'Storage', 64)}**\n${meter}\n${weeklyPair(used, total)}`;
+  });
+  if (disks.length > 6) lines.push(`… ${disks.length - 6} more volumes`);
+  return lines.join('\n\n').slice(0, 1024);
+}
+
+function weeklyDriveValue(data = {}) {
+  const drives = Array.isArray(data.drives) ? data.drives.filter((drive) => drive && typeof drive === 'object') : [];
+  if (!drives.length) return '';
+  const lines = drives.slice(0, 6).map((drive) => {
+    const icon = drive.critical ? '🔴' : drive.warning ? '🟠' : '🟢';
+    const driveTemperature = weeklyNumber(drive.temperature_c);
+    const temperature = driveTemperature == null ? '' : ` · ${driveTemperature.toFixed(0)}°C`;
+    return `${icon} **${safeUpdateText(drive.model || 'Drive', 80)}** · ${safeUpdateText(drive.state || 'status not reported', 80)}${temperature}`;
+  });
+  if (drives.length > 6) lines.push(`… ${drives.length - 6} more drives`);
+  return lines.join('\n\n').slice(0, 1024);
+}
+
+function weeklyContainerValue(data = {}, media = [], mediaSummary = null) {
+  const containers = data.containers || {};
+  const running = weeklyNumber(containers.running);
+  const total = weeklyNumber(containers.total);
+  const lines = [`${running != null && total != null && running === total ? '🟢' : '🟡'} **${running == null || total == null ? 'Container count unavailable' : `${running}/${total} running`}**`];
+  const unhealthy = Array.isArray(containers.unhealthy) ? containers.unhealthy : [];
+  if (unhealthy.length) lines.push(`🔴 Unhealthy · ${unhealthy.map((item) => safeUpdateText(item, 60)).join(', ')}`);
+  const mediaRows = Array.isArray(media) ? media.filter((item) => item && typeof item === 'object') : [];
+  if (mediaRows.length) {
+    const online = mediaRows.filter((item) => item.online === true).length;
+    const mediaIcon = online === mediaRows.length ? '🟢' : online ? '🟡' : '🔴';
+    lines.push(`${mediaIcon} **Media** ${online}/${mediaRows.length} online`);
+  }
+  if (mediaSummary?.assessed === true) {
+    const missing = Array.isArray(mediaSummary.missing) && mediaSummary.missing.length
+      ? ` · missing ${mediaSummary.missing.map((item) => safeUpdateText(item, 50)).join(', ')}`
+      : '';
+    lines.push(`${mediaSummary.complete ? '🟢' : '🟡'} **Media stack** ${mediaSummary.complete ? 'complete' : `incomplete${missing}`}`);
+  }
+  return lines.join('\n').slice(0, 1024);
+}
+
+function weeklyUpdatesValue(runtipi = null, systemUpdates = null) {
+  const lines = [];
+  const currentSources = [];
+  const pendingSources = [];
+  if (runtipi?.available === true) {
+    const appUpdates = Array.isArray(runtipi.updates) ? runtipi.updates : [];
+    if (appUpdates.length) {
+      const labels = appUpdates.slice(0, 4).map((item) => updateVersionLine(item)).join('\n');
+      const remaining = appUpdates.length > 4 ? ` · +${appUpdates.length - 4} more` : '';
+      lines.push(`🟡 **Runtipi apps** · ${appUpdates.length} available${remaining}\n${labels}`);
+      pendingSources.push('Runtipi');
+    } else {
+      const installed = weeklyNumber(runtipi.installed_total);
+      currentSources.push(installed != null && installed > 0 ? `Runtipi ${installed} apps` : 'Runtipi apps');
+    }
+  } else if (runtipi?.available === false && runtipi?.detail) {
+    lines.push('⚪ **Runtipi apps** · check unavailable');
+  }
+  const bot = runtipi?.bot;
+  if (bot?.configured) {
+    if (bot.available === false) lines.push(`⚪ **${botName()}** · GitHub check unavailable`);
+    else if (bot.update_available) {
+      lines.push(`🟡 **${botName()}** · ${safeUpdateText(bot.latest || 'update', 48)} available`);
+      pendingSources.push(botName());
+    } else {
+      currentSources.push(`${botName()} ${safeUpdateText(bot.current || 'current', 48)}`);
+    }
+  }
+  if (systemUpdates?.available === true) {
+    const os = operatingSystemShortLabel(systemUpdates, 'Host');
+    const pending = weeklyNumber(systemUpdates.pending_count);
+    const securityCount = weeklyNumber(systemUpdates.security_count);
+    if (pending != null && pending > 0) {
+      const security = securityCount != null ? ` · ${securityCount} security` : '';
+      lines.push(`🟡 **${safeUpdateText(os, 64)}** · ${pending} pending${security}`);
+      pendingSources.push(os);
+    } else if (pending != null) {
+      currentSources.push(`${safeUpdateText(os, 64)} host`);
+    } else {
+      lines.push(`⚪ **${safeUpdateText(os, 64)}** · update status unavailable`);
+    }
+  } else if (systemUpdates?.available === false) {
+    const os = operatingSystemShortLabel(systemUpdates, 'Host');
+    lines.push(`⚪ **${safeUpdateText(os, 64)}** · update check unavailable`);
+  }
+  if (!lines.length && currentSources.length) {
+    lines.push(`🟢 **No pending updates** · ${currentSources.join(' · ')}`);
+  } else if (lines.length && !pendingSources.length && currentSources.length) {
+    lines.push(`🟢 Current · ${currentSources.join(' · ')}`);
+  }
+  return lines.join('\n').slice(0, 1024);
+}
+
+export function weeklyHealthEmbed(data = {}, services = [], media = [], systemUpdates = null, runtipiUpdates = null, mediaSummary = null) {
+  const result = assessment(data, services, media, mediaSummary);
+  const footerZone = config.timeZone === 'Asia/Singapore' ? 'SGT' : config.timeZone;
+  const statusIcon = result.critical ? '🔴' : result.issues.length ? '🟡' : '🟢';
+  const embed = base(
+    `${serverName(data)} Weekly Health`,
+    `${statusIcon} **${result.label}**`,
+    `Internal monitoring · Sundays at 8:00 PM ${footerZone} · ${weeklyDateLabel(data.timestamp)}`,
+  ).setColor(result.color).addFields(
+    { name: '⚙️ System', value: weeklySystemValue(data), inline: true },
+    { name: '⏱️ Runtime', value: weeklyRuntimeValue(data), inline: true },
+    { name: '💾 Storage usage', value: weeklyStorageValue(data), inline: true },
+  );
+  const driveValue = weeklyDriveValue(data);
+  const driveCount = Array.isArray(data.drives) ? data.drives.length : 0;
+  if (driveValue) embed.addFields({ name: `🩺 Drive health · ${driveCount}`, value: driveValue, inline: false });
+  embed.addFields({ name: '📦 Containers', value: weeklyContainerValue(data, media, mediaSummary), inline: false });
+  const updates = weeklyUpdatesValue(runtipiUpdates, systemUpdates);
+  if (updates) embed.addFields({ name: '⬆️ Updates', value: updates, inline: false });
+  return embed;
+}
+
 export function helpEmbed() {
   return base(
     `${botName()} // help`,
@@ -139,22 +340,26 @@ export function helpEmbed() {
   )
     .setColor(colors.idle)
     .addFields(
-      { name: 'Overview', value: '`/panel` command centre\n`/status` host snapshot\n`/health` concise diagnostic\n`/report` detailed health report\n`/ping` bot response timing', inline: true },
+      { name: 'Overview', value: '`/panel` command centre\n`/status` host snapshot\n`/health` concise diagnostic\n`/report` detailed health report\n`/ping` bot + gateway timing', inline: true },
       { name: 'Workloads', value: '`/tasks` live Docker resource view\n`/services` detected containers\n`/media` media providers and playback\n`/minecraft` server status and controls', inline: true },
-      { name: 'Operations', value: '`/storage` capacity, SMART and drives\n`/network` detected DNS/network providers\n`/updates` Runtipi, host and bot releases\n`/wake` Wake-on-LAN (saved favourites supported)', inline: true },
-      { name: 'Access', value: 'Guests can view read-only commands and use `/wake`. Administrators can confirm service, Minecraft, update and policy changes. `/controls` is opt-out by default: new containers are controllable unless protected or explicitly disabled.', inline: false },
+      { name: 'Operations', value: '`/storage` capacity, SMART and drives\n`/network` detected DNS/network providers\n`/updates` available host, app and bot releases\n`/settings` access, controls and recovery\n`/wake` Wake-on-LAN (saved favourites supported)', inline: true },
+      { name: 'Access', value: 'Guests can view read-only commands and use `/wake`. Administrators can confirm service, Minecraft and update actions. Open `/settings` to manage identities, control policy, update stream and recovery options.', inline: false },
     );
 }
 
-export function pingEmbed({ processingMs, websocketMs } = {}) {
+export function pingEmbed({ processingMs, websocketMs, gatewayMs, gatewayReachable, dnsConfigured, dnsReachable } = {}) {
   const processing = Number.isFinite(Number(processingMs)) ? `${Math.max(0, Math.round(Number(processingMs))).toLocaleString('en-GB')} ms` : 'not measured';
   const gateway = Number.isFinite(Number(websocketMs)) && Number(websocketMs) >= 0
     ? `${Math.round(Number(websocketMs)).toLocaleString('en-GB')} ms`
     : 'not reported';
+  const internalGateway = Number.isFinite(Number(gatewayMs)) && Number(gatewayMs) >= 0
+    ? `${Math.round(Number(gatewayMs)).toLocaleString('en-GB')} ms`
+    : gatewayReachable === false ? 'unreachable' : 'not measured';
+  const dns = dnsReachable ? 'answering' : dnsConfigured ? 'configured · no response' : 'not configured';
   return base(
     `${botName()} // ping`,
-    `🟢 **Response received**\nBot processing · **${processing}**\nDiscord gateway · **${gateway}**`,
-    'Measured locally when the command was handled · no host probe was performed',
+    `🟢 **Response received**\nBot processing · **${processing}**\nDiscord gateway · **${gateway}**\nInternal gateway · **${internalGateway}**\nDNS · **${dns}**`,
+    'Measured when handled · internal gateway and DNS probes are read-only',
   ).setColor(colors.ok);
 }
 
@@ -288,17 +493,30 @@ export function panelEmbed(data, services, media, updates = null, mediaSummary =
   const onlineMedia = media.filter((item) => item.online).length;
   const trackedRunning = services.filter((item) => item.container && item.state === 'running').length;
   const updateCount = Array.isArray(updates?.updates) ? updates.updates.length : null;
-  const updateState = updates?.available === false ? '⚪ Check unavailable' : updateCount ? `🟡 ${updateCount} available` : '🟢 Up to date';
+  // A missing update snapshot means the optional Runtipi integration was not
+  // queried (or failed before it returned). Do not turn that absence into a
+  // misleading “up to date” claim in the compact panel.
+  const runtipiState = updates?.available === true
+    ? updateCount ? `🟡 ${updateCount} available` : '🟢 Up to date'
+    : '';
+  const bot = updates?.bot;
+  const botState = !bot?.configured ? '' : bot.available === false ? '🟡 Check unavailable' : bot.update_available ? `🟡 ${bot.latest || 'update'} available` : `🟢 ${bot.current || 'current'}`;
+  const softwareLines = [];
+  // Put the controller first: it is the only component that can report back
+  // after replacing itself.  Optional Runtipi status is omitted entirely when
+  // that integration is not configured or currently unavailable.
+  if (botState) softwareLines.push(`**${bot.channel === 'beta' ? 'Beta' : 'Stable'} bot** ${botState}`);
+  if (runtipiState) softwareLines.push(`**Runtipi apps** ${runtipiState}`);
+  if (!softwareLines.length) softwareLines.push('No software update sources are configured');
   return base(commandTitle(data, 'control centre'), `${result.critical ? '🔴' : result.issues.length ? '🟡' : '🟢'} **${result.label}**\nYour live command centre for the home server.`, 'Home-server control panel')
     .setColor(result.color)
     .addFields(
       { name: 'Live now', value: `${meter('CPU', data.cpu_percent, cpuDetail(data))}\n\n${meter('Memory', memory, `${bytes(data.memory.used)} / ${bytes(data.memory.total)}`)}\n\n**Uptime** ${duration(data.uptime_seconds)}`, inline: true },
       { name: 'Fleet signal', value: `**Docker** ${data.containers.running}/${data.containers.total}\n**Tracked** ${trackedRunning}/${data.containers.tracked_total}${media.length ? `\n**Media** ${onlineMedia}/${media.length} reachable${mediaSummary?.assessed === true ? `\n${mediaSummary.complete ? '🟢 Complete' : '🟡 Incomplete'}` : ''}` : ''}`, inline: true },
-      { name: 'Software', value: `**Runtipi** ${updateState}\nUse \`/updates\` for manual, administrator-confirmed actions. GitHub release checks never install the bot automatically.`, inline: true },
+      { name: 'Software', value: `${softwareLines.join('\n')}\nUse \`/updates\` for available, administrator-confirmed actions.`, inline: true },
       { name: `${operatingSystemIcon(data)} Host operating system`, value: operatingSystemLabel(data, 'Host OS unavailable'), inline: true },
       ...(knownContainerOs(data) ? [{ name: '📦 Control container', value: operatingSystemLabel({ os: containerOsInfo(data) }, 'Container OS unavailable'), inline: true }] : []),
       { name: 'Capacity', value: diskSummary(data), inline: false },
-      { name: 'Control shortcuts', value: '`/health` diagnostic\n`/report` detailed report\n`/tasks` Docker RAM/CPU breakdown\n`/services` service controls\n`/minecraft` Minecraft controls\n`/storage` capacity + SMART\n`/wake mac:...` Wake-on-LAN', inline: true },
       { name: 'Next best action', value: result.issues[0] ? `⚠️ ${result.issues[0]}` : result.recommendations[0] ? `💡 ${result.recommendations[0]}` : '✅ No action needed right now.', inline: true },
     );
 }
@@ -366,7 +584,7 @@ export function botUpdateConfirmationEmbed(release) {
   return base(
     'Confirm Homelab Control update',
     `Install the verified GitHub release **${version}**?${size}\n\nOnly the control agent and Discord bot images will be rebuilt. Other containers and their data remain online. The previous control images are retained if runtime verification fails.`,
-    'Manual administrator confirmation · no automatic bot updates',
+    'Manual administrator confirmation · automatic updates are off by default',
   ).setColor(colors.warn).addFields({ name: `What changed in ${version}`, value: safeReleaseNotes(release?.release_notes), inline: false });
 }
 
@@ -395,6 +613,9 @@ function rollbackOptionsFor(release) {
 }
 
 function recommendedRollbackOptions(release) {
+  if (Array.isArray(release?.rollback_quick_options) && release.rollback_quick_options.length) {
+    return release.rollback_quick_options.slice(0, 6);
+  }
   const options = rollbackOptionsFor(release);
   const selected = [];
   const lines = new Set();
@@ -437,7 +658,7 @@ export function botRollbackOptionsEmbed(release) {
       : 'No retained local image pair is available.';
   const embed = base(
     'Homelab Control // rollback options',
-    `Current version · **v${safeUpdateText(current, 40)}**\n\nChoose a previous version to review before anything changes. ${history} ${local}\n\n⚠️ **Reverting to much older releases is not recommended.** Older builds may be incompatible with the current configuration, APIs or stored data. Prefer the newest verified option unless you have a specific reason to go further back.`,
+    `Current version · **v${safeUpdateText(current, 40)}** · ${release?.channel === 'beta' ? 'Beta stream' : 'Stable stream'}\n\nChoose a previous version to review before anything changes. ${history} ${local}\n\nThe quick choices use the cloud-published golden, LTS and previous-line approvals when they are available. The full menu is for exact older releases.\n\n⚠️ **Reverting to much older releases is not recommended.** Older builds may be incompatible with the current configuration, APIs or stored data. Prefer the newest verified option unless you have a specific reason to go further back.`,
     'Manual administrator action · exact GitHub archive and SHA-256 digest are checked',
   ).setColor(colors.warn);
   if (recommended.length) {
@@ -469,7 +690,7 @@ export function botRollbackOptionsRows(release) {
     rows.push(new ActionRowBuilder().addComponents(buttons.slice(index, index + 5).map((option) => (
       new ButtonBuilder()
         .setCustomId(option.local ? 'updates:bot-rollback-retained' : `updates:bot-rollback-version:${safeUpdateText(option.version, 32)}`)
-        .setLabel(option.local ? (localVersion ? `Rollback to retained v${localVersion}` : 'Rollback to retained version') : rollbackButtonLabel(option.version))
+        .setLabel(option.local ? (localVersion ? `Rollback to retained v${localVersion}` : 'Rollback to retained version') : option.quick_role === 'golden' ? `Golden v${option.version}` : option.quick_role === 'lts' ? `LTS v${option.version}` : option.quick_role === 'last_major' ? `Previous line v${option.version}` : rollbackButtonLabel(option.version))
         .setEmoji('↩️')
         .setStyle(ButtonStyle.Secondary)
     ))));
@@ -478,7 +699,7 @@ export function botRollbackOptionsRows(release) {
     rows.push(new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId('updates:bot-rollback-select')
-        .setPlaceholder('Select a previous GitHub version')
+        .setPlaceholder('Select a previous version')
         .addOptions(options.map((option) => ({
           label: `v${safeUpdateText(option.version, 80)}`.slice(0, 100),
           value: safeUpdateText(option.version, 80),
@@ -544,8 +765,10 @@ export function botReleaseSummary(release) {
     : release.update_available
       ? [`🟡 **Update available**`, `Current · **${current}**`, `Latest · **${latest}**`]
       : [`🟢 **Up to date**`, `Version · **${current}**`];
+  if (release.channel === 'beta') {
+    lines.push('⚠️ Beta live-patch route · automatic updates require explicit acknowledgement in /settings');
+  }
   if (releaseSizeBytes(release.asset_size) !== null) lines.push(`Source archive · **${releaseSizeLabel(release.asset_size)}**`);
-  lines.push('🧑‍💻 **Manual update only** · GitHub checks are read-only until an administrator confirms an action');
   if (release.update_available && !release.asset_verified) lines.push('🔒 Update held · the release archive has no verified SHA-256 digest');
   else if (release.update_available && !release.update_supported) lines.push('🔒 Update held · the guarded host release bridge is not configured');
   else if (release.update_available && !active) lines.push('✅ Verified archive ready to install');
@@ -627,15 +850,18 @@ function hostUpdateFieldName(snapshot, suffix = 'host') {
 }
 
 export function updatesEmbed(snapshot, systemUpdates = null) {
-  if (!snapshot?.available) {
+  const runtipiAvailable = snapshot?.available === true;
+  const botRelease = snapshot?.bot;
+  const fields = [];
+  if (botRelease) fields.push({ name: `🤖 ${botName()} release`, value: botReleaseSummary(botRelease), inline: false });
+  if (systemUpdates) fields.push({ name: hostUpdateFieldName(systemUpdates), value: hostUpdateSummary(systemUpdates), inline: false });
+  if (!runtipiAvailable) {
     const unavailable = base(
-      'Runtipi // software updates',
-      `🟡 **Update checks unavailable**\n${safeUpdateText(snapshot?.detail || 'Runtipi did not return an update status.')}`,
-      'No update attempted · restore Runtipi connection, then refresh',
+      'Software updates',
+      `${botRelease || systemUpdates ? '🟡 Some update sources are unavailable' : '🟡 Update checks unavailable'}\n${safeUpdateText(snapshot?.detail || 'Runtipi is not connected on this host; available sources are shown below.')}`,
+      'No action was attempted · refresh after restoring an unavailable source',
     ).setColor(colors.warn);
-    if (systemUpdates) unavailable.addFields({ name: hostUpdateFieldName(systemUpdates), value: hostUpdateSummary(systemUpdates), inline: false });
-    if (snapshot?.bot) unavailable.addFields({ name: '🤖 Homelab Control release', value: botReleaseSummary(snapshot.bot), inline: false });
-    return unavailable;
+    return unavailable.addFields(...fields);
   }
   const updates = Array.isArray(snapshot.updates) ? snapshot.updates : [];
   const protectedUpdates = Array.isArray(snapshot.protected_updates) ? snapshot.protected_updates : [];
@@ -644,17 +870,16 @@ export function updatesEmbed(snapshot, systemUpdates = null) {
     ? `${protectedUpdates.map(updateVersionLine).join('\n').slice(0, 700)}\n\nThe controller stays protected so it remains available while other apps update.`
     : 'The controller is protected from update-all actions.';
   const embed = base(
-    'Runtipi // software updates',
+    'Software updates',
     `${updates.length ? '🟡' : '🟢'} **${updates.length ? `${updates.length} update${updates.length === 1 ? '' : 's'} available` : 'All eligible apps are current'}**\nChecked ${snapshot.checked_at ? `<t:${Math.floor(new Date(snapshot.checked_at).getTime() / 1000)}:R>` : 'just now'}`,
-    'Runtipi lifecycle · backup requested · Docker/app ping verifies completion',
+    'Runtipi lifecycle · explicit administrator confirmation required',
   )
     .setColor(updates.length ? colors.warn : colors.ok)
     .addFields(
-      { name: `Available updates · ${updates.length}`, value: lines, inline: false },
+      ...fields,
+      { name: `Runtipi updates · ${updates.length}`, value: lines, inline: false },
       { name: 'Protected scope', value: protectedLine, inline: false },
     );
-  if (systemUpdates) embed.addFields({ name: hostUpdateFieldName(systemUpdates), value: hostUpdateSummary(systemUpdates), inline: false });
-  if (snapshot.bot) embed.addFields({ name: '🤖 Homelab Control release', value: botReleaseSummary(snapshot.bot), inline: false });
   return embed;
 }
 
@@ -709,6 +934,149 @@ export function updatesRows(snapshot, systemOrAllow = null, actions = true) {
   return rows;
 }
 
+function identityList(values, fallback = 'none configured') {
+  const entries = Array.isArray(values) ? values.filter(Boolean).slice(0, 12) : [];
+  return entries.length ? entries.map((value) => '`' + safeUpdateText(value, 25) + '`').join(', ') : fallback;
+}
+
+export function settingsEmbed(settings = {}, status = {}, policy = null, category = 'home') {
+  const mode = settings.autoUpdateMode || 'off';
+  const modeLabel = mode === 'off' ? 'off' : mode === 'hotfix' ? 'hotfixes daily (recommended)' : `${mode} at ${String(settings.autoUpdateHour ?? 4).padStart(2, '0')}:00 local time`;
+  const betaSelected = settings.releaseChannel === 'beta';
+  const betaConfirmed = settings.betaAutoUpdateConfirmed === true;
+  const displayedModeLabel = betaSelected && !betaConfirmed && mode !== 'off'
+    ? `locked until beta acknowledgement (configured: ${modeLabel})`
+    : modeLabel;
+  const stream = betaSelected ? 'Beta stream (stable + pre-releases)' : 'Stable stream';
+  const host = operatingSystemLabel(status, 'Host OS unavailable');
+  const server = serverName(status);
+  const superuserIds = [...new Set([config.ownerId, ...(settings.superuserIds || [])])];
+  const embed = base(
+    category === 'home' ? `${botName()} // settings` : `${botName()} // settings · ${category}`,
+    category === 'home'
+      ? 'Keep the deployment calm and explicit. Choose a category below; changes are stored in the bot data volume and never expose tokens.'
+      : category === 'access'
+        ? 'Manage who can use the private panel. The configured owner always remains a superuser.'
+        : category === 'updates'
+          ? 'Choose the release stream and whether the bot may update itself on a schedule. Off is the default.'
+          : category === 'controls'
+            ? 'Controls are detected from Docker. Opt-out enables them by default; protected control-plane containers remain read-only.'
+            : category === 'recovery'
+              ? 'Recovery actions are administrator-only. Host package updates use the detected operating system; reset clears the configured settings files after making a private backup, and restore is available if you change your mind.'
+              : 'Connection and identity details for this deployment.',
+    'Private administrator settings · secrets are never shown',
+  ).setColor(colors.idle);
+  if (category === 'home') {
+    embed.addFields(
+      { name: 'Update behaviour', value: `**Stream** ${stream}\n**Auto-update** ${displayedModeLabel}`, inline: true },
+      { name: 'Connection', value: `**Host** ${safeUpdateText(host, 120)}\n**Server** ${safeUpdateText(server, 80)}\n**Containers** ${status.containers ? `${status.containers.running}/${status.containers.total} running` : 'not reported'}`, inline: true },
+      { name: 'Access', value: `**Admins** ${identityList(settings.adminUserIds)}\n**Guests** ${identityList(settings.guestUserIds)}\n**Superusers** ${identityList(superuserIds)}`, inline: false },
+    );
+  } else if (category === 'access') {
+    embed.addFields(
+      { name: 'Superusers', value: `${identityList(superuserIds)}\nThey can manage administrators and settings. The owner cannot be removed.`, inline: false },
+      { name: 'Administrators', value: `${identityList(settings.adminUserIds)}\nAdmins can confirm service, host and release actions.`, inline: false },
+      { name: 'Guests', value: `${identityList(settings.guestUserIds)}\nGuests receive read-only views and Wake-on-LAN only.`, inline: false },
+    );
+  } else if (category === 'updates') {
+    embed.addFields(
+      { name: 'Release stream', value: `**${stream}**\nBeta is opt-in and receives stable releases plus GitHub pre-releases.`, inline: true },
+      { name: 'Automatic checks', value: `**${displayedModeLabel}**\nWeekly checks are for stable major releases; hotfixes are checked daily. Nothing changes when this is off.`, inline: true },
+    );
+    if (betaSelected) {
+      embed.addFields({
+        name: betaConfirmed ? '✅ Beta live-patch route acknowledged' : '⚠️ Beta live-patch route requires acknowledgement',
+        value: betaConfirmed
+          ? 'Automatic updates are allowed only after this explicit acknowledgement. Choose a schedule above when you are ready; you can revoke it at any time.'
+          : 'Beta builds can change quickly and may contain pre-release changes. Automatic updates are locked until an administrator acknowledges this live-patch route below. Selecting Beta alone never enables unattended updates.',
+        inline: false,
+      });
+    }
+  } else if (category === 'controls') {
+    const services = Array.isArray(policy?.services) ? policy.services : [];
+    const enabled = services.filter((service) => service.enabled ?? service.manageable).length;
+    embed.addFields({ name: 'Current policy', value: `**${policy?.mode || settings.serviceControlMode || 'opt-out'}** · ${enabled}/${services.length} detected containers controllable\n${safeUpdateText(policy?.mode_description || 'Choose a container below to review its lifecycle controls.', 600)}`, inline: false });
+  } else if (category === 'recovery') {
+    embed.addFields({ name: 'Safety boundary', value: 'Restart and reinstall actions touch only the control agent and Discord bot. Host package updates use the guarded bridge for the detected operating system. Reset clears the configured config/runtime files only after a timestamped private backup; restore that backup before restarting if the config file also supplies Compose values.', inline: false });
+  } else {
+    embed.addFields(
+      { name: 'Host', value: `**${safeUpdateText(host, 120)}**\n${status.hostname ? `Hostname · ${safeUpdateText(status.hostname, 80)}` : ''}`, inline: true },
+      { name: 'Discord pairing', value: `**Server** ${safeUpdateText(server, 80)}\n**Guilds** ${config.guildIds.length}`, inline: true },
+      { name: 'Runtime', value: `**Bot** ${safeUpdateText(botName(), 80)}\n**Control mode** ${settings.serviceControlMode || config.serviceControlMode}`, inline: true },
+    );
+  }
+  return embed;
+}
+
+export function settingsRows(settings = {}, category = 'home', policy = null, page = 0) {
+  const scheduleHour = String(settings.autoUpdateHour ?? 4).padStart(2, '0');
+  const autoModePlaceholder = settings.releaseChannel === 'beta' && settings.betaAutoUpdateConfirmed !== true && settings.autoUpdateMode && settings.autoUpdateMode !== 'off'
+    ? 'Automatic updates · locked'
+    : `Automatic updates · ${settings.autoUpdateMode || 'off'}`;
+  const home = [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('settings:category:access').setLabel('Access').setEmoji('👥').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('settings:category:updates').setLabel('Updates').setEmoji('⬆️').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('settings:category:controls').setLabel('Controls').setEmoji('🛡️').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('settings:category:recovery').setLabel('Recovery').setEmoji('🧰').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('settings:category:status').setLabel('Connection').setEmoji('🖥️').setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+  if (category === 'home') return [...home, ...backRow('panel')];
+  const rows = [...home];
+  if (category === 'access') {
+    rows.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('settings:add:adminUserIds').setLabel('Add admin').setEmoji('➕').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('settings:add:guestUserIds').setLabel('Add guest').setEmoji('➕').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('settings:add:superuserIds').setLabel('Add superuser').setEmoji('⭐').setStyle(ButtonStyle.Secondary),
+    ));
+    const removable = [
+      ...(settings.superuserIds || []).map((id) => ({ id, kind: 'superuserIds', label: 'Superuser' })),
+      ...(settings.adminUserIds || []).map((id) => ({ id, kind: 'adminUserIds', label: 'Administrator' })),
+      ...(settings.guestUserIds || []).map((id) => ({ id, kind: 'guestUserIds', label: 'Guest' })),
+    ].filter((entry) => !(entry.kind === 'superuserIds' && entry.id === config.ownerId))
+      .filter((entry, index, entries) => entries.findIndex((candidate) => candidate.id === entry.id) === index).slice(0, 25);
+    if (removable.length) rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('settings:remove').setPlaceholder('Remove an identity').addOptions(removable.map((entry) => ({ label: entry.id, value: entry.id, description: entry.label })))));
+  } else if (category === 'updates') {
+    rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('settings:auto-mode').setPlaceholder(autoModePlaceholder).addOptions([
+      { label: 'Off · manual updates', value: 'off', description: 'Recommended when you want full control' },
+      { label: 'Hotfixes daily · recommended', value: 'hotfix', description: `Check every day at ${scheduleHour}:00 for compact letter hotfixes` },
+      { label: 'Daily stable checks', value: 'daily', description: `Check every day at ${scheduleHour}:00 for stable releases` },
+      { label: 'Weekly stable checks', value: 'weekly', description: `Check Sundays at ${scheduleHour}:00 for stable major releases` },
+    ])));
+    rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('settings:release-channel').setPlaceholder(`Release stream · ${settings.releaseChannel || 'stable'}`).addOptions([
+      { label: 'Stable stream', value: 'stable', description: 'Published stable releases only' },
+      { label: 'Beta stream (opt-in)', value: 'beta', description: 'Includes stable releases and GitHub pre-releases' },
+    ])));
+    if (settings.releaseChannel === 'beta') {
+      rows.push(new ActionRowBuilder().addComponents(
+        settings.betaAutoUpdateConfirmed === true
+          ? new ButtonBuilder().setCustomId('settings:beta-revoke').setLabel('Revoke beta auto-updates').setEmoji('🛑').setStyle(ButtonStyle.Danger)
+          : new ButtonBuilder().setCustomId('settings:beta-acknowledge').setLabel('Acknowledge live-patch route').setEmoji('⚠️').setStyle(ButtonStyle.Danger),
+      ));
+    }
+  } else if (category === 'recovery') {
+    rows.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('settings:restart').setLabel('Restart bot').setEmoji('🔄').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('settings:linux-updates').setLabel('Host updates').setEmoji('🖥️').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('settings:reset').setLabel('Reset settings').setEmoji('🧹').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('settings:restore').setLabel('Restore backup').setEmoji('↩️').setStyle(ButtonStyle.Secondary),
+    ));
+    rows.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('settings:fix-preserve').setLabel('Reinstall · keep config').setEmoji('🧰').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('settings:fix-fresh').setLabel('Fresh reinstall').setEmoji('⚠️').setStyle(ButtonStyle.Danger),
+    ));
+  } else if (category === 'controls') {
+    // The controls catalogue already needs all five Discord component rows
+    // (refresh/back, mode and up to three selector pages). Keep it intact and
+    // use its Back to settings button for category navigation.
+    const services = Array.isArray(policy?.services) ? policy.services : [];
+    return controlsRows(services, policy || {}, { allowActions: true, page, backTarget: 'settings', backLabel: 'Back to settings', modeCustomId: 'settings:control-mode', selectPrefix: 'settings-control:select', togglePrefix: 'settings-control-toggle', refreshPrefix: 'settings-controls:refresh', pagePrefix: 'settings-controls:page' });
+  }
+  rows.push(...backRow('settings'));
+  return rows.slice(0, 5);
+}
+
 function maintenanceEventLines(snapshot) {
   const events = Array.isArray(snapshot?.events) ? snapshot.events : [];
   if (!events.length) return 'Waiting for the host bridge…';
@@ -721,7 +1089,7 @@ export function systemUpdateLoadingEmbed(snapshot, tick = 0) {
   const dots = '.'.repeat((tickValue % 3) + 1);
   const phase = snapshot?.phase || 'queued';
   const phaseLabel = safeUpdateText(phase, 40).replace(/_/g, ' ');
-  const osLabel = operatingSystemShortLabel(snapshot, Object.keys(osInfo(snapshot)).length ? 'host' : 'Ubuntu');
+  const osLabel = operatingSystemShortLabel(snapshot, 'Host');
   return base(
     `${osLabel} // guarded maintenance`,
     `${glyph} **${phaseLabel}${dots}**\n⏳ The guarded host bridge is processing the confirmed request.\nNo automatic restart will be performed.`,
@@ -739,7 +1107,7 @@ export function systemUpdateResultEmbed(snapshot) {
   const complete = phase === 'complete';
   const waiting = phase === 'ready_for_reboot';
   const failed = phase === 'failed';
-  const osLabel = operatingSystemShortLabel(snapshot, Object.keys(osInfo(snapshot)).length ? 'Host' : 'Ubuntu');
+  const osLabel = operatingSystemShortLabel(snapshot, 'Host');
   const icon = complete ? '🟢' : waiting ? '🟡' : failed ? '🔴' : '🟣';
   const headline = complete ? `${osLabel} updates applied` : waiting ? `${osLabel} updates applied — restart pending` : failed ? `${osLabel} update failed` : `${osLabel} maintenance ${safeUpdateText(phase, 40)}`;
   const lines = [
@@ -756,6 +1124,35 @@ export function systemUpdateResultEmbed(snapshot) {
   )
     .setColor(complete ? colors.ok : failed ? colors.bad : colors.warn)
     .addFields({ name: 'Recent activity', value: maintenanceEventLines(snapshot), inline: false });
+}
+
+export function hostRestartWaitingEmbed(snapshot = {}) {
+  const osLabel = operatingSystemShortLabel(snapshot, 'Host');
+  const phase = safeUpdateText(String(snapshot.phase || 'rebooting').replace(/_/g, ' '), 40);
+  return base(
+    `${osLabel} // restarting`,
+    `🟣 **Restarting the host…**\nThe confirmed restart is in progress. The bot will keep checking quietly and replace this message with **Restarted successfully** after the host bridge reports a new boot.\n\n⏳ A short period of silence is expected while the server comes back online.`,
+    `${osLabel} restart · waiting for post-boot verification`,
+  ).setColor(colors.idle).addFields({ name: 'Current phase', value: phase, inline: false });
+}
+
+export function hostRestartResultEmbed(snapshot = {}) {
+  const phase = String(snapshot.phase || 'failed').toLowerCase();
+  const complete = phase === 'online';
+  const osLabel = operatingSystemShortLabel(snapshot, 'Host');
+  const icon = complete ? '🟢' : '🔴';
+  const headline = complete ? 'Restarted successfully' : 'Restart verification failed';
+  const lines = [
+    `${icon} **${headline}**`,
+    complete ? `${osLabel} is back online after the confirmed restart.` : safeUpdateText(snapshot.detail || 'The host did not report a verified post-boot state.', 320),
+  ];
+  if (snapshot.online_at) lines.push(`Back online · <t:${Math.floor(new Date(snapshot.online_at).getTime() / 1000)}:R>`);
+  if (snapshot.boot_id) lines.push(`Boot identity · **${safeUpdateText(snapshot.boot_id, 80)}**`);
+  return base(
+    `${osLabel} // restart result`,
+    lines.join('\n'),
+    `${osLabel} restart · post-boot status ${complete ? 'verified' : 'not verified'}`,
+  ).setColor(complete ? colors.ok : colors.bad).addFields({ name: 'Recent activity', value: maintenanceEventLines(snapshot), inline: false });
 }
 
 export function updateLoadingEmbed(title, stage = 0, tick = 0, detail = '') {
@@ -808,6 +1205,63 @@ export function botReleaseRestartEmbed(action, release) {
     `🟣 **Restarting the control agent and Discord bot…**\nThe controller is ${verb} **${safeUpdateText(target, 60)}**. A short period of silence is expected while it replaces itself.\n\n⏳ This can take several minutes. This message will change to **Update complete** only after the new agent and bot both answer their health checks.`,
     'Manual release hand-off · other containers remain online',
   ).setColor(colors.idle);
+}
+
+const maintenanceActionLabels = {
+  restart: { title: 'Restarting Homelab Control', verb: 'restarting the control containers', complete: 'Bot restart verified' },
+  reset: { title: 'Resetting Homelab Control settings', verb: 'clearing the configured settings after a private backup', complete: 'Settings reset complete' },
+  restore: { title: 'Restoring Homelab Control settings', verb: 'restoring the most recent private settings backup', complete: 'Settings restore complete' },
+  'fix-preserve': { title: 'Repairing Homelab Control', verb: 'recreating the control containers while preserving configuration', complete: 'Bot repair verified' },
+  'fix-fresh': { title: 'Reinstalling Homelab Control', verb: 'recreating the control containers with fresh settings', complete: 'Fresh reinstall verified' },
+};
+
+function maintenanceActionLabel(action) {
+  return maintenanceActionLabels[action] || { title: 'Maintaining Homelab Control', verb: 'running the confirmed maintenance action', complete: 'Maintenance complete' };
+}
+
+export function botMaintenanceLoadingEmbed(action, release, tick = 0) {
+  const tickValue = Math.max(0, Number(tick) || 0);
+  const glyph = loadingGlyphs[tickValue % loadingGlyphs.length];
+  const dots = '.'.repeat((tickValue % 3) + 1);
+  const phase = String(release?.phase || 'queued').toLowerCase();
+  const stage = botReleaseStages[phase] || `Host bridge phase: ${phase.replace(/_/g, ' ')}`;
+  const labels = maintenanceActionLabel(action);
+  const events = Array.isArray(release?.events) && release.events.length
+    ? release.events.slice(-5).map((event) => `• ${safeUpdateText(event.message, 180)}`).join('\n')
+    : 'Waiting for the host bridge to report its first step…';
+  return base(
+    `${botName()} // ${labels.title}`,
+    `${glyph} **${safeUpdateText(stage, 180)}${dots}**\n⏳ The guarded bridge is ${safeUpdateText(labels.verb, 180)}. Completion will be reported only after the resulting control state is read back.`,
+    'Manual administrator maintenance · no other containers are changed',
+  ).setColor(colors.idle).addFields({ name: 'Live feed', value: events.slice(0, 1024), inline: false });
+}
+
+export function botMaintenanceRestartEmbed(action, release = {}) {
+  const labels = maintenanceActionLabel(action);
+  return base(
+    `${botName()} // maintenance hand-off`,
+    `🟣 **${safeUpdateText(labels.title, 120)}…**\nThe controller is ${safeUpdateText(labels.verb, 180)}. A short period of silence is expected while the control containers are recreated.\n\n⏳ This can take several minutes. This message will change to **${safeUpdateText(labels.complete, 80)}** after the new control state is verified.`,
+    'Manual maintenance hand-off · other containers remain online',
+  ).setColor(colors.idle);
+}
+
+export function botMaintenanceResultEmbed(action, release = {}) {
+  const phase = String(release?.phase || 'failed').toLowerCase();
+  const complete = phase === 'complete';
+  const labels = maintenanceActionLabel(action);
+  const icon = complete ? '🟢' : '🔴';
+  const version = release?.current_version || release?.current || release?.version;
+  const lines = [`${icon} **${complete ? labels.complete : 'Maintenance stopped safely'}**`];
+  if (version) lines.push(`Running version · **${safeUpdateText(version, 60)}**`);
+  if (release?.detail) lines.push(safeUpdateText(release.detail, 360));
+  const events = Array.isArray(release?.events) && release.events.length
+    ? release.events.slice(-6).map((event) => `• ${safeUpdateText(event.message, 180)}`).join('\n')
+    : 'No host bridge events were returned.';
+  return base(
+    `${botName()} // maintenance result`,
+    lines.join('\n'),
+    `Manual maintenance · ${complete ? 'result verified' : 'verification incomplete'}`,
+  ).setColor(complete ? colors.ok : colors.bad).addFields({ name: 'Recent activity', value: events.slice(0, 1024), inline: false });
 }
 
 export function botReleaseResultEmbed(action, release) {
@@ -995,7 +1449,7 @@ export function servicesEmbed(services) {
   const summary = `**${healthy}/${services.length}** available${discovered ? ` · **${discovered}** auto-detected` : ''}`;
   const listing = lines.join('\n');
   const description = `${summary}\n\n${listing}`.slice(0, 4000);
-  return base('Services', description, 'Live Docker catalogue · refresh to detect new containers').setColor(healthy === services.length ? colors.ok : colors.warn);
+  return base('Services', description, 'Live Docker catalogue · lifecycle controls can be reviewed in /settings').setColor(healthy === services.length ? colors.ok : colors.warn);
 }
 
 function providerLine(provider) {
@@ -1017,20 +1471,32 @@ function networkStackStatus(summary) {
   return `🟡 **Network stack incomplete** · missing ${missing}`;
 }
 
-export function networkEmbed(providers, summary = null, hostStatus = {}) {
+export function networkEmbed(providers, summary = null, hostStatus = {}, connectivity = null) {
   const rows = Array.isArray(providers) ? providers : [];
+  const connectivityFields = [];
+  if (connectivity?.gateway) {
+    const gateway = connectivity.gateway;
+    const latency = Number.isFinite(Number(gateway.latency_ms)) ? `${Math.round(Number(gateway.latency_ms))} ms` : 'not measured';
+    connectivityFields.push({ name: '🚪 Internal gateway', value: `${gateway.reachable ? '🟢 Reachable' : gateway.configured ? '🟡 Discovered · no response' : '⚪ Not detected'}\n${latency}${gateway.probe_type ? ` · ${safeUpdateText(gateway.probe_type, 24)}` : ''}`, inline: true });
+  }
+  if (connectivity?.dns) {
+    const dns = connectivity.dns;
+    const latency = Number.isFinite(Number(dns.latency_ms)) ? ` · ${Math.round(Number(dns.latency_ms))} ms` : '';
+    connectivityFields.push({ name: '🧭 DNS setup', value: `${dns.reachable ? '🟢 Answering' : dns.configured ? '🟡 Configured · no response' : '⚪ Not configured'}${latency}\n${safeUpdateText(dns.detail || '', 120)}`, inline: true });
+  }
   if (!rows.length) {
     const status = networkStackStatus(summary);
-    return base(commandTitle(hostStatus, 'network'), `No DNS or network services were detected.${status ? `\n\n${status}` : ''}`, 'Auto-detected providers · TCP timings are endpoint checks · read-only').setColor(summary?.assessed && !summary.complete ? colors.warn : colors.idle);
+    return base(commandTitle(hostStatus, 'network'), `No DNS or network services were detected.${status ? `\n\n${status}` : ''}`, 'Auto-detected providers · gateway/DNS probes are read-only').setColor(summary?.assessed && !summary.complete ? colors.warn : colors.idle)
+      .addFields(...connectivityFields);
   }
   const online = rows.filter((provider) => provider.online).length;
   const lines = rows.map(providerLine).join('\n');
   const containers = rows.map((provider) => provider.container).filter(Boolean);
   const completeness = networkStackStatus(summary);
   const description = `${online === rows.length ? '🟢' : '🔴'} **${online}/${rows.length} detected providers online**${completeness ? `\n${completeness}` : ''}\n${lines}`;
-  return base(commandTitle(hostStatus, 'network'), description, 'Auto-detected providers · TCP timings are endpoint checks · read-only')
+  return base(commandTitle(hostStatus, 'network'), description, 'Auto-detected providers · gateway/DNS probes are read-only')
     .setColor(summary?.assessed && !summary.complete ? colors.warn : online === rows.length ? colors.ok : colors.bad)
-    .addFields({ name: 'Detected services', value: containers.length ? containers.map((container) => `• ${safeUpdateText(container, 90)}`).join('\n').slice(0, 1024) : 'External provider endpoint', inline: false });
+    .addFields(...connectivityFields, { name: 'Detected services', value: containers.length ? containers.map((container) => `• ${safeUpdateText(container, 90)}`).join('\n').slice(0, 1024) : 'External provider endpoint', inline: false });
 }
 
 export function controlsEmbed(services, policy = {}, options = {}) {
@@ -1080,25 +1546,34 @@ export function controlsRows(services, policy = {}, options = {}) {
   const pageSize = 75;
   const pageCount = Math.max(1, Math.ceil(entries.length / pageSize));
   const page = Math.min(pageCount - 1, Math.max(0, Number(options.page) || 0));
+  const backTarget = options.backTarget || 'panel';
+  const backLabel = options.backLabel || (backTarget === 'settings' ? 'Back to settings' : 'Back to panel');
+  const selectPrefix = options.selectPrefix || 'control:select';
+  const togglePrefix = options.togglePrefix || 'control-toggle';
+  const pagePrefix = options.pagePrefix || 'controls:page';
   if (service) {
-    const backId = page > 0 ? `control:back:${page + 1}` : 'control:back';
-    const buttons = [new ButtonBuilder().setCustomId(backId).setLabel('Back to controls').setEmoji('⬅️').setStyle(ButtonStyle.Secondary)];
+    const backId = backTarget === 'panel'
+      ? (page > 0 ? `control:back:${page + 1}` : 'control:back')
+      : (page > 0 ? `control:back:${page + 1}:${backTarget}` : `control:back:${backTarget}`);
+    const detailBackLabel = options.detailBackLabel || (backTarget === 'settings' ? backLabel : 'Back to controls');
+    const buttons = [new ButtonBuilder().setCustomId(backId).setLabel(detailBackLabel).setEmoji('⬅️').setStyle(ButtonStyle.Secondary)];
     if (options.allowActions !== false && !service.protected) {
       const active = service.enabled ?? service.manageable;
-      buttons.unshift(new ButtonBuilder().setCustomId(`control-toggle:${service.key}:${active ? 'off' : 'on'}`).setLabel(active ? 'Disable controls' : 'Enable controls').setEmoji(active ? '⏸️' : '✅').setStyle(active ? ButtonStyle.Danger : ButtonStyle.Success));
+      buttons.unshift(new ButtonBuilder().setCustomId(`${togglePrefix}:${service.key}:${active ? 'off' : 'on'}`).setLabel(active ? 'Disable controls' : 'Enable controls').setEmoji(active ? '⏸️' : '✅').setStyle(active ? ButtonStyle.Danger : ButtonStyle.Success));
     }
     return [new ActionRowBuilder().addComponents(buttons)];
   }
   const pageStart = page * pageSize;
   const pageEntries = entries.slice(pageStart, pageStart + pageSize);
-  const navigation = [new ButtonBuilder().setCustomId(`controls:refresh:${page + 1}`).setLabel('Refresh').setEmoji('🔄').setStyle(ButtonStyle.Primary), backButton('panel')];
-  if (page > 0) navigation.push(new ButtonBuilder().setCustomId(`controls:page:${page}`).setLabel('Previous').setEmoji('⬅️').setStyle(ButtonStyle.Secondary));
-  if (page < pageCount - 1) navigation.push(new ButtonBuilder().setCustomId(`controls:page:${page + 2}`).setLabel('Next').setEmoji('➡️').setStyle(ButtonStyle.Secondary));
+  const refreshPrefix = options.refreshPrefix || 'controls:refresh';
+  const navigation = [new ButtonBuilder().setCustomId(`${refreshPrefix}:${page + 1}`).setLabel('Refresh').setEmoji('🔄').setStyle(ButtonStyle.Primary), backButton(backTarget, backLabel)];
+  if (page > 0) navigation.push(new ButtonBuilder().setCustomId(`${pagePrefix}:${page}`).setLabel('Previous').setEmoji('⬅️').setStyle(ButtonStyle.Secondary));
+  if (page < pageCount - 1) navigation.push(new ButtonBuilder().setCustomId(`${pagePrefix}:${page + 2}`).setLabel('Next').setEmoji('➡️').setStyle(ButtonStyle.Secondary));
   const rows = [new ActionRowBuilder().addComponents(navigation)];
   if (options.allowActions !== false) {
     rows.push(new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
-        .setCustomId('controls:mode')
+        .setCustomId(options.modeCustomId || 'controls:mode')
         .setPlaceholder(`Control mode · ${policy.mode === 'opt-in' ? 'opt-in' : 'opt-out'}`)
         .addOptions([
           { label: 'Opt-out · automatic controls', value: 'opt-out', description: 'Detected containers are enabled unless you switch one off' },
@@ -1117,7 +1592,7 @@ export function controlsRows(services, policy = {}, options = {}) {
   for (let index = 0; index < optionsList.length; index += 25) {
     rows.push(new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
-        .setCustomId(`control:select:${page + 1}:${Math.floor(index / 25) + 1}`)
+        .setCustomId(`${selectPrefix}:${page + 1}:${Math.floor(index / 25) + 1}`)
         .setPlaceholder(optionsList.length > 25 ? `Review containers (${pageStart + index + 1}–${Math.min(pageStart + index + 25, entries.length)})` : 'Review a container policy')
         .addOptions(optionsList.slice(index, index + 25)),
     ));
@@ -1304,7 +1779,7 @@ export function taskDetailEmbed(task) {
     .setColor(colors.idle)
     .addFields(
       { name: 'Memory', value: taskMemoryLine(task || {}), inline: true },
-      { name: 'CPU & processes', value: `${cpu}\n${pids} processes (PIDs)`, inline: true },
+      { name: 'CPU & processes', value: `${cpu}\n${pids} processes (PIDs)\nPIDs are process IDs; the count helps spot leaks.`, inline: true },
       { name: 'Container image', value: `\`${taskText(task?.image || 'unknown', 240)}\``, inline: false },
       { name: 'Network totals', value: network, inline: true },
     );
@@ -1538,7 +2013,7 @@ export function minecraftEmbed(servers) {
 
 export function panelRows(withBack = false) {
   const rows = [new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('nav:status').setLabel('Refresh').setEmoji('🔄').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('nav:panel').setLabel('Refresh').setEmoji('🔄').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('nav:services').setLabel('Services').setEmoji('🧩').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('nav:minecraft').setLabel('Minecraft').setEmoji('⛏️').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('nav:storage').setLabel('Storage').setEmoji('💾').setStyle(ButtonStyle.Secondary),
@@ -1547,7 +2022,7 @@ export function panelRows(withBack = false) {
     new ButtonBuilder().setCustomId('nav:tasks').setLabel('Tasks').setEmoji('📊').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('nav:network').setLabel('Network').setEmoji('🌐').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('nav:updates').setLabel('Updates').setEmoji('⬆️').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('nav:controls').setLabel('Controls').setEmoji('🛡️').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('nav:settings').setLabel('Settings').setEmoji('⚙️').setStyle(ButtonStyle.Secondary),
   )];
   if (withBack) rows.push(...backRow('panel'));
   return rows;

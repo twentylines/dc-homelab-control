@@ -9,14 +9,20 @@ strongest on the combinations that are easiest to verify: Crafty plus a
 Jellyfin/Seerr/Sonarr/Radarr/Prowlarr/qBittorrent media stack, and ordinary
 Docker containers. Other integrations stay optional and quiet when absent.
 
+The project started as Sai's small Acheron bot for a server nicknamed Hades;
+the published product uses neutral, configurable names so it can fit another
+homelab without carrying those private names into the code or UI.
+
 ## Tested reference setup
 
-The reference deployment used for the release-candidate checks is Ubuntu
+The reference deployment used for the 0.4.0 release-candidate checks is Ubuntu
 Server 24.04 LTS on amd64 with Docker managed by Runtipi, a Jellyfin/Seerr
 media stack (including Sonarr, Radarr, Prowlarr and qBittorrent), Crafty
 Controller for Minecraft, and supporting AdGuard Home, Beszel, Scrutiny,
-Paperless-ngx, Syncthing and Uptime Kuma containers. The offline test suite
-also covers arm64-safe metadata, Docker-only discovery and API-shaped
+Paperless-ngx, Syncthing and Uptime Kuma containers. This release publishes
+amd64 only; an arm64 runtime has not been tested and is not advertised as
+supported. The offline test suite
+covers architecture-safe metadata, Docker-only discovery and API-shaped
 Pterodactyl/Pelican fixtures. Other dashboards and providers are detected only
 where their documented read-only path responds; they are not claimed as
 equally tested. The control agent and bot are separate Alpine-based containers;
@@ -44,8 +50,13 @@ the UI reports that container identity separately from the Ubuntu host.
 - Guarded Runtipi and supported apt-family host maintenance workflows when the
   separately reviewed host bridge is installed; the host OS is detected rather
   than assumed to be Ubuntu.
-- GitHub release checks for the bot itself. Checks are read-only; an
-  administrator must explicitly confirm any checksum-gated update or rollback.
+- An optional Sunday weekly-health webhook with the compact health-card layout:
+  system/runtime figures, adaptive storage meters, drive/container health and
+  a small row for available app, host and bot updates. It is separate from the
+  detailed `/report` command.
+- GitHub release checks for the bot itself. Checks are read-only and bot
+  self-updates are off by default; an administrator may opt into a daily,
+  weekly-stable or daily-hotfix schedule from `/settings`.
 - Wake-on-LAN for arbitrary trusted devices with saved favourites.
 - Administrator and guest whitelists. Service controls are opt-out by default:
   detected containers are visible and controllable after administrator
@@ -114,19 +125,33 @@ is the complete path from a fresh homelab to a tested public release:
    verified history available from GitHub. When those local images have been
    pruned, choosing a version fetches that exact release. It never accepts an
    arbitrary tag or an unverified download.
+   Bot self-updates remain off unless an administrator chooses a mode in
+   `/settings`. `hotfix` checks compact letter releases such as `0.4.0a` daily;
+   `daily` checks the selected stream every day; `weekly` checks stable major
+   lines on Sunday. The beta stream includes both stable releases and
+   pre-releases, but its automatic route is locked until an administrator
+   explicitly acknowledges the **beta live-patch route** in `/settings →
+   Updates`. Selecting beta never silently enables unattended updates; revoking
+   that acknowledgement turns the schedule off again. The scheduler records a
+   pending job and reports completion after the replacement containers answer
+   health checks. For a scheduled bot OTA, that completion is attached as one
+   compact extra embed to the first successful slash-command response after
+   restart, then consumed permanently; manual bot updates and host/Linux
+   updates keep their own completion response.
    Supported apt-family host package updates and host reboots are separate,
    explicitly confirmed operations and are never triggered by a container
    update.
 7. **Publish only what was tested.** Run the offline Python and Node test
    suites, review the support matrix, inspect the staged file list and perform
    a secret scan. Commit to the intended repository, create a version tag such
-   as `v0.3.22` (or compact hotfix `v0.3.22c`), and let
+   as `v0.4.0` (or compact hotfix `v0.4.0a`), and let
    `.github/workflows/release.yml` create the source archive, `SHA256SUMS`,
-   GitHub release and versioned `amd64`/`arm64` GHCR
-   images. Compact letter hotfix tags such as `v0.3.22c` are supported and are
+   GitHub release and versioned `amd64` GHCR
+   images. Compact letter hotfix tags such as `v0.4.0a` are supported and are
    ordered after their matching stable patch. Make the GHCR packages public
-   before another host installs the Runtipi definition. Do not advertise an
-   untested dashboard as supported.
+   before another host installs the Runtipi definition. arm64 is not listed as
+   a supported architecture until a real arm64 runtime is tested. Do not
+   advertise an untested dashboard as supported.
 8. **Install and support it.** Point the Runtipi app at the exact published
    image/tag, complete the local configuration, and repeat the private-guild
    checks on that host. If a release fails health verification, use the retained
@@ -186,9 +211,10 @@ before submitting it to a community or own Runtipi store.
 
 ## Bot releases and rollback
 
-Set `HOMELAB_CONTROL_REPOSITORY=owner/repository` to show the latest stable
-GitHub release in `/updates`. This check is read-only: a release never installs
-by itself, on a schedule, or merely because the bot restarts. The release must
+Set `HOMELAB_CONTROL_REPOSITORY=owner/repository` to show the latest release
+in `/updates`. This check is read-only. A release never installs merely because
+the bot restarts; self-updates are off by default and only run after an
+administrator opts into a schedule in `/settings`. The release must
 contain exactly one `.tar.gz` or `.tgz` source archive with a GitHub SHA-256
 digest. The update button remains disabled when that digest is absent or when
 the host bridge is not configured.
@@ -210,9 +236,11 @@ from GitHub's verified release archives. Selecting a version stages a separate
 administrator confirmation; the agent resolves the version to its exact tag,
 archive URL and digest, and the bridge validates them again before downloading
 and building. A retained local image pair remains available as a fallback.
-No update or rollback is automatic: an administrator must confirm it. Release
-requests carry a manual confirmation marker; requests without it are refused
-by the bridge. Reverting to much older versions is not recommended because
+Manual updates and rollbacks always require administrator confirmation. Release
+requests carry a confirmation marker; requests without it are refused by the
+bridge. Scheduled bot updates use the same checksum and health gates and are
+limited to the selected opt-in mode. Reverting to much older versions is not
+recommended because
 configuration, APIs or stored data may no longer be compatible.
 
 The worker rejects non-GitHub URLs, path traversal, symlinks, unexpected
@@ -237,6 +265,15 @@ root-owned files and the bridge configuration private.
 - API keys are read-only wherever the upstream service supports that scope.
   Webhooks and tokens are validated and are never included in embeds or audit
   output.
+- `DISCORD_SUPERUSER_IDS` adds identities that can manage the administrator
+  and superuser lists. Runtime changes are stored in the private bot data
+  volume, not in the public config or release archive.
+- `HOMELAB_CONTROL_AUTO_UPDATE_MODE=off` is the safe default. Use `/settings`
+  to choose `hotfix`, `daily` or `weekly` after reviewing the release stream
+  and backup path. `HOMELAB_CONTROL_AUTO_UPDATE_HOUR` selects the local hour.
+  Beta automatic updates have an additional administrator-only acknowledgement
+  step for the live-patch route; without it, the scheduler remains manual even
+  if an older environment setting requested a schedule.
 
 See [`docs/SETUP.md`](docs/SETUP.md), [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md),
 [`docs/MINECRAFT.md`](docs/MINECRAFT.md) and [`SECURITY.md`](SECURITY.md) for
@@ -270,7 +307,11 @@ automation. A normal publication is:
    that an untested dashboard or provider is supported.
 3. Create a `v*` tag after the tests and secret scan pass. The workflow packages
    the source, writes `SHA256SUMS`, creates the GitHub release checked by
-   `/updates`, and publishes versioned `amd64`/`arm64` images to GHCR.
+   `/updates`, and publishes the verified amd64 image to GHCR. arm64 remains
+   out of the app manifest until runtime testing is available. Use a normal tag
+   such as `v0.4.0` for stable releases; a hyphenated tag such as
+   `v0.4.0-beta.1` is published as a GitHub pre-release, while compact letter
+   tags such as `v0.4.0a` remain stable hotfixes.
 4. Make the GHCR packages public before using the Runtipi `app/` definition on
    another host, then point that definition at the exact image tag.
 

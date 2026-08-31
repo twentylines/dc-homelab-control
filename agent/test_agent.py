@@ -390,6 +390,36 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertEqual(rows[0]["port_source"], "ambiguous")
         self.assertIsNone(rows[0]["url"])
 
+    def test_media_api_endpoint_uses_a_custom_published_port_when_url_is_blank(self):
+        entries = [{
+            "Id": "jellyfin-custom",
+            "Names": ["/jellyfin-custom"],
+            "Image": "jellyfin/jellyfin:latest",
+            "State": "running",
+            "Ports": [{"PublicPort": 18096, "PrivatePort": 8096}],
+        }]
+        with patch.object(self.module, "HOST_GATEWAY", "homelab-gateway"), patch.object(self.module, "containers", return_value=entries):
+            candidates = self.module._provider_endpoint_candidates("jellyfin", "", 8096)
+        self.assertEqual(candidates[0], "http://homelab-gateway:18096")
+
+    def test_media_api_endpoint_uses_the_internal_container_name_without_a_published_port(self):
+        entries = [{
+            "Id": "jellyfin-internal",
+            "Names": ["/jellyfin"],
+            "Image": "jellyfin/jellyfin:latest",
+            "State": "running",
+            "Ports": [],
+        }]
+        with patch.object(self.module, "containers", return_value=entries):
+            candidates = self.module._provider_endpoint_candidates("jellyfin", "", 8096)
+        self.assertEqual(candidates[0], "http://jellyfin:8096")
+        self.assertIn("host.docker.internal", candidates[-1])
+
+    def test_media_api_endpoint_prefers_an_explicit_url(self):
+        with patch.object(self.module, "containers", side_effect=AssertionError("explicit URLs must not trigger discovery")):
+            candidates = self.module._provider_endpoint_candidates("plex", "https://plex.example.test:32400", 32400)
+        self.assertEqual(candidates, ["https://plex.example.test:32400"])
+
     def test_service_health_does_not_red_bridge_only_or_guess_multiple_ports(self):
         bridge_only = {
             "key": "jellyfin", "container": "jellyfin", "state": "running", "health": "process",
@@ -559,6 +589,36 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertGreater(self.module._release_version_key("0.3.22c"), self.module._release_version_key("0.3.22b"))
         self.assertGreater(self.module._release_version_key("0.3.22b"), self.module._release_version_key("0.3.22"))
 
+    def test_prerelease_versions_use_semantic_identifier_order(self):
+        self.assertGreater(self.module._release_version_key("0.4.0-beta.10"), self.module._release_version_key("0.4.0-beta.2"))
+        self.assertGreater(self.module._release_version_key("0.4.0-rc.1"), self.module._release_version_key("0.4.0-beta.10"))
+        self.assertGreater(self.module._release_version_key("0.4.0"), self.module._release_version_key("0.4.0-rc.1"))
+
+    def test_release_channels_keep_prereleases_opt_in(self):
+        import json
+
+        payload = json.dumps([
+            {"tag_name": "v0.4.0", "prerelease": False},
+            {"tag_name": "v0.5.0-rc.1", "prerelease": True},
+        ]).encode("utf-8")
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return payload
+
+        with patch.object(self.module.urllib.request, "urlopen", return_value=Response()):
+            self.assertEqual(self.module._release_version(self.module._github_release_payload("example/homelab-control", "stable").get("tag_name")), "0.4.0")
+            self.assertEqual(self.module._release_version(self.module._github_release_payload("example/homelab-control", "beta").get("tag_name")), "0.5.0-rc.1")
+            self.assertTrue(self.module._release_channel_allows({"prerelease": False}, "beta"))
+
     def test_bot_release_status_discovers_verified_previous_github_release(self):
         import tempfile
 
@@ -604,7 +664,7 @@ class AgentHelpersTest(unittest.TestCase):
             }
             return {"tag_name": f"v{version}", "prerelease": False, "assets": [asset]}
 
-        releases = [release("0.3.22c"), release("0.3.22b"), release("0.3.22"), release("0.3.21"), release("0.3.20", "sha256:not-a-digest")]
+        releases = [release("0.3.22c"), release("0.3.22b"), release("0.3.22"), release("0.3.21b"), release("0.3.21"), release("0.3.20", "sha256:not-a-digest")]
         with tempfile.TemporaryDirectory() as directory, patch.object(self.module, "HOMELAB_CONTROL_REPOSITORY", "example/homelab-control"), \
                 patch.object(self.module, "HOMELAB_CONTROL_VERSION", "0.3.22c"), \
                 patch.object(self.module, "BOT_RELEASE_STATUS_FILE", pathlib.Path(directory) / "bot-release.json"), \
@@ -613,8 +673,9 @@ class AgentHelpersTest(unittest.TestCase):
             self.module._bot_release_cache_value = None
             self.module._bot_release_cache_timestamp = 0.0
             status = self.module.bot_release_status(force=True)
-        self.assertEqual([item["version"] for item in status["rollback_options"]], ["0.3.22b", "0.3.22", "0.3.21"])
+        self.assertEqual([item["version"] for item in status["rollback_options"]], ["0.3.22b", "0.3.22", "0.3.21b"])
         self.assertNotIn("0.3.20", [item["version"] for item in status["rollback_options"]])
+        self.assertNotIn("0.3.21", [item["version"] for item in status["rollback_options"]])
 
     def test_bot_release_status_keeps_github_rollback_when_latest_check_is_unavailable(self):
         import tempfile
@@ -675,6 +736,16 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertEqual(writes[0]["selected_version"], "0.3.17")
         self.assertEqual(writes[0]["asset_url"], selected["asset_url"])
         self.assertEqual(writes[0]["asset_digest"], selected["asset_digest"])
+
+    def test_beta_automatic_release_requires_live_patch_acknowledgement(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(self.module, "MAINTENANCE_DIR", pathlib.Path(directory)):
+                with self.assertRaises(PermissionError):
+                    self.module._queue_bot_release_request(
+                        "bot_update", "123", "Sai", automatic=True, channel="beta"
+                    )
 
     def test_jellyfin_preferred_user_scope_uses_administrator_without_exposing_it(self):
         users = [

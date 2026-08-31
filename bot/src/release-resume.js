@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { agent } from './agent.js';
+import { readSettings } from './settings.js';
 import { botReleaseRestartEmbed, botReleaseResultEmbed, updateResultRows } from './ui.js';
 import { notifyMaintenanceEvent } from './weekly.js';
 
@@ -47,7 +48,10 @@ export function stageBotReleaseResume(interaction, action, accepted) {
     interaction_token: String(interaction.token),
     action,
     job_id: String(accepted?.job_id || ''),
-    target: accepted?.latest || accepted?.requested_version || accepted?.rollback_version || null,
+    // The queue bridge returns `version` for both update and rollback jobs;
+    // retain it so the restart handoff can state exactly what is being
+    // installed while the containers are temporarily silent.
+    target: accepted?.latest || accepted?.requested_version || accepted?.rollback_version || accepted?.version || null,
     created_at: createdAt,
     expires_at: createdAt + MAX_INTERACTION_AGE_MS,
   });
@@ -81,7 +85,7 @@ export async function resumeBotReleaseWorkflow() {
 
   while (Date.now() < Number(state.expires_at || 0)) {
     try {
-      const snapshot = await agent.updates(true);
+      const snapshot = await agent.updates(true, readSettings().releaseChannel);
       release = snapshot.bot || release;
       const phase = String(release.phase || '').toLowerCase();
       if (!sameJob(state, release)) {

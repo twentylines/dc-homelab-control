@@ -46,3 +46,35 @@ test('optional config file fills blank deployment fields without overriding expl
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('scheduled OTA completion notice is consumed once', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'homelab-control-notice-'));
+  const file = join(directory, 'settings.json');
+  const script = [
+    "import { consumePostUpdateNotice, markPostUpdateNotice } from './src/settings.js';",
+    "markPostUpdateNotice('0.4.0a', '0.4.0');",
+    "console.log(JSON.stringify({ first: consumePostUpdateNotice(), second: consumePostUpdateNotice() }));",
+  ].join('\n');
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: new URL('..', import.meta.url),
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOMELAB_CONTROL_SETTINGS_FILE: file,
+      CONTROL_TOKEN: 'test-control-token-000000000000000000000000000000',
+      DISCORD_TOKEN: 'test-discord-token-000000000000000000000000000000',
+      DISCORD_CLIENT_ID: '123456789012345678',
+      DISCORD_GUILD_ID: '123456789012345678',
+      DISCORD_OWNER_ID: '123456789012345678',
+    },
+  });
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.first.version, '0.4.0a');
+    assert.equal(output.first.previous, '0.4.0');
+    assert.equal(output.second, null);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.4.0 - 2026-08-31
+
+1. Added a persisted `/settings` area for access identities, release streams,
+   opt-in self-update schedules, control policy and recovery actions. Runtime
+   state is kept separate from secrets; destructive resets create a private
+   backup before clearing the configured settings files.
+2. Added multiple superuser support with owner protection, runtime admin/guest
+   management and read-only guest boundaries for non-administrators.
+3. Added scheduled bot updates that are disabled by default, with daily,
+   weekly-stable and daily-hotfix modes, a local-hour setting, duplicate-job
+   protection and a post-restart completion notice only after both control
+   health checks pass; scheduled OTA completion is attached once to the first
+   successful slash-command response after restart, while manual workflows
+   retain their own completion response.
+4. Extended release discovery to stable and beta streams, public rollback
+   policy metadata, adaptive archive sizes and compact letter hotfix ordering;
+   hyphenated beta/RC identifiers are compared semantically; every downloaded
+   archive remains repository-, URL-, checksum- and health-verified by the
+   root bridge.
+5. Added read-only internal gateway and DNS connectivity measurements and a
+   `/ping` view that reports bot, gateway and DNS timing without exposing
+   private addresses.
+6. Improved host identity reporting so the detected host operating system and
+   the control-container operating system are labelled separately; unsupported
+   host package managers remain explicitly unavailable.
+7. Added safe settings reset/restore, preserve-config repair and explicitly
+   confirmed fresh repair flows with private timestamped backups and health
+   verification.
+8. Removed the public `/controls` command in favour of the clearer settings
+   path, kept legacy component handling compatible, and refreshed help,
+   navigation and update-source fallbacks for deployments without Runtipi.
+9. Documented the tested Ubuntu/Runtipi amd64 reference stack, neutral branding,
+   provider boundaries, AGPL distribution obligations and the decision not to
+   advertise arm64 until a real arm64 runtime is tested.
+10. Added release-policy fixtures, scheduler coverage hooks and regression
+    checks for the new settings, release, network and security boundaries.
+11. Restored the compact weekly health card with consistent adaptive storage
+    bars and a quiet summary of available host, Runtipi and bot updates.
+12. Added an explicit beta live-patch acknowledgement gate for automatic bot
+    updates; selecting the beta stream alone can never enable unattended
+    updates, while beta users still receive stable releases.
+
 ## 0.3.22c - 2026-08-31
 
 1. Added verified multi-version rollback history with recommended release lines

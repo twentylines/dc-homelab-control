@@ -58,7 +58,8 @@ To make `/updates` check the bot itself, set
 `HOMELAB_CONTROL_REPOSITORY=owner/repository` and keep
 `HOMELAB_CONTROL_VERSION` at the installed release. The repository's tagged
 release must be produced by `.github/workflows/release.yml`, which publishes a
-single source archive and its SHA-256 checksum.
+single source archive and its SHA-256 checksum. Checks are read-only and
+self-updates are off by default.
 
 The update and rollback buttons require the separate root bridge. Install it
 once with `sudo ./scripts/install-maintenance.sh`, then edit
@@ -70,6 +71,9 @@ HOMELAB_CONTROL_REPOSITORY=owner/repository
 HOMELAB_CONTROL_COMPOSE_FILE=/srv/homelab-control/compose.local.yml
 HOMELAB_CONTROL_ENV_FILE=/srv/homelab-control/config.env
 HOMELAB_CONTROL_COMPOSE_PROJECT=homelab-control
+HOMELAB_CONTROL_CONFIG_FILE=/srv/homelab-control/config.env
+HOMELAB_CONTROL_SETTINGS_FILE=/srv/homelab-control/data/bot/settings.json
+HOMELAB_CONTROL_SETTINGS_BACKUP_ROOT=/var/lib/homelab-control/maintenance/settings-backups
 HOMELAB_CONTROL_RELEASE_ROOT=/var/lib/homelab-control/maintenance/releases
 ```
 
@@ -80,11 +84,37 @@ file must be the same host directory mounted read-write at `/host/maintenance`
 in the agent. The bridge validates the repository and exact GitHub asset URL,
 verifies the digest, checks the archive contents, rebuilds only `agent` and
 `bot`, waits for both health checks, and keeps the prior images for rollback.
+`HOMELAB_CONTROL_SETTINGS_FILE` should point to the host-side file backing the
+bot's `/data/settings.json`; setting it enables complete reset/restore backups
+for the runtime settings overlay. A settings reset also clears the configured
+bot config file after creating a private backup. Keep that config path separate
+from `HOMELAB_CONTROL_ENV_FILE` when possible; if they are the same file, the
+running containers stay online and you must restore the backup (or provide a
+new environment file) before a future restart.
 `/updates` shows each verified source-archive download size in adaptive units
 (the built image size is separate) and lets an administrator choose from the
 available GitHub history when a specific rollback is needed. The bridge
 validates that exact metadata again before it downloads anything. It never
 updates other containers and never restarts the host.
+
+After the bridge is healthy, an administrator can open `/settings` and choose
+the release stream plus one of the opt-in schedules: `hotfix` checks compact
+   letter releases daily, `daily` checks the selected stream daily, and `weekly`
+   checks stable major lines on Sunday. The beta stream includes both stable
+   releases and pre-releases, but automatic beta updates are locked until the
+   administrator acknowledges the **beta live-patch route** shown in Settings →
+   Updates. Selecting beta alone never enables unattended updates; revoking the
+   acknowledgement turns the schedule off. The bot records the accepted job
+   and reports completion after the replacement containers answer both health
+   checks. Scheduled bot OTA completion is a one-shot compact extra embed on the
+   first successful slash-command response after restart; it does not post a
+   separate message and never appears again. Manual bot and host/Linux
+   operations keep their own completion response.
+
+The optional weekly webhook is intentionally a separate compact summary, not a
+copy of `/report`: it shows the system/runtime snapshot, adaptive storage
+meters, drive and container health, and available app, host and bot updates in
+one card.
 
 ## 4. Validate, then start
 
@@ -103,7 +133,7 @@ docker compose --env-file config.env -f compose.local.yml logs --tail=100 agent 
 ```
 
 Once the bot is online, run `/panel` in the configured guild. Review `/services`
-and `/controls` before enabling any lifecycle controls. The first `/tasks`
+and `/settings` before enabling any lifecycle controls. The first `/tasks`
 sample can take a few seconds because Docker stats are collected on demand.
 
 ## 5. Runtipi packaging

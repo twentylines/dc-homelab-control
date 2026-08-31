@@ -9,18 +9,48 @@ import {
 } from 'discord.js';
 import { randomBytes } from 'node:crypto';
 import { agent } from './agent.js';
-import { isAdmin } from './access.js';
+import { isAdmin, isSuperuser } from './access.js';
 import { crafty } from './crafty.js';
 import { config } from './config.js';
 import { favoriteNames, getFavorite, saveFavorite } from './favorites.js';
 import { wakeDevice } from './wol.js';
 import {
-  actionLoadingEmbed, backButton, backRow, base, bytes, colors, errorEmbed, helpEmbed, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, operatingSystemIcon, operatingSystemShortLabel, pingEmbed,
+  actionLoadingEmbed, backButton, backRow, base, bytes, colors, errorEmbed, helpEmbed, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, operatingSystemIcon, operatingSystemShortLabel, pingEmbed, postUpdateNoticeEmbed,
   controlsEmbed, controlsRows, healthEmbed, networkEmbed, panelEmbed, panelRows, reportEmbeds, serviceRows, servicesEmbed, statusEmbed, storageEmbed,
-  botReleaseLoadingEmbed, botReleaseRestartEmbed, botReleaseResultEmbed, botRollbackConfirmationEmbed, botRollbackOptionsEmbed, botRollbackOptionsRows, botUpdateConfirmationEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows,
+  settingsEmbed, settingsRows,
+  botMaintenanceLoadingEmbed, botMaintenanceRestartEmbed, botMaintenanceResultEmbed, botReleaseLoadingEmbed, botReleaseRestartEmbed, botReleaseResultEmbed, botRollbackConfirmationEmbed, botRollbackOptionsEmbed, botRollbackOptionsRows, botUpdateConfirmationEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows,
 } from './ui.js';
 import { notifyMaintenanceEvent } from './weekly.js';
 import { clearBotReleaseResume, stageBotReleaseResume } from './release-resume.js';
+import { clearHostRebootResume, stageHostRebootResume } from './host-reboot-resume.js';
+import { clearBotMaintenanceResume, stageBotMaintenanceResume } from './maintenance-resume.js';
+import { addIdentity, consumePostUpdateNotice, readSettings, removeIdentity, updateSettings } from './settings.js';
+
+function releaseChannel() {
+  const selected = readSettings().releaseChannel;
+  return ['stable', 'beta'].includes(selected) ? selected : config.releaseChannel;
+}
+
+function updatesCheck(force = false) {
+  return agent.updates(force, releaseChannel());
+}
+
+function attachPostUpdateNotice(payload) {
+  if (!Array.isArray(payload?.embeds)) return payload;
+  const notice = consumePostUpdateNotice();
+  if (!notice) return payload;
+  // Keep this silent: attach one compact embed to the first successful slash
+  // command after a scheduled OTA restart instead of posting a new message.
+  // Discord caps a message at ten embeds; every normal command has room, but
+  // retain the notice as a field if a future report ever reaches that limit.
+  if (payload.embeds.length < 10) payload.embeds.push(postUpdateNoticeEmbed(notice));
+  else if (payload.embeds[0]?.addFields) payload.embeds[0].addFields({
+    name: '✅ Update complete',
+    value: `Scheduled update verified on **${String(notice.version || 'the new version').slice(0, 40)}**.`,
+    inline: false,
+  });
+  return payload;
+}
 
 export const commandData = [
   new SlashCommandBuilder().setName('panel').setDescription('Open the homelab control panel')
@@ -39,7 +69,7 @@ export const commandData = [
     .addBooleanOption((option) => option.setName('public').setDescription('Post for everyone in this channel')),
   new SlashCommandBuilder().setName('network').setDescription('Check detected DNS and network services')
     .addBooleanOption((option) => option.setName('public').setDescription('Post for everyone in this channel')),
-  new SlashCommandBuilder().setName('controls').setDescription('Review detected container controls (read-only for guests)'),
+  new SlashCommandBuilder().setName('settings').setDescription('Manage access, updates, controls and recovery'),
   new SlashCommandBuilder().setName('help').setDescription('Show the command guide')
     .addBooleanOption((option) => option.setName('public').setDescription('Post for everyone in this channel')),
   new SlashCommandBuilder().setName('ping').setDescription('Measure bot response time')
@@ -93,6 +123,10 @@ const loadingProfiles = {
   updates: {
     steps: ['Request sent to the Runtipi, host OS and GitHub status readers', 'Waiting for catalogue, host and release responses', 'Preparing verified update controls'],
     detail: 'Read-only update check · no update action is being attempted',
+  },
+  settings: {
+    steps: ['Request sent to the control agent', 'Reading saved bot settings and host identity', 'Formatting the settings categories'],
+    detail: 'Private settings view · no change is made until you confirm one',
   },
   tasks: {
     steps: ['Request sent to the Docker resource reader', 'Docker is sampling CPU, memory, processes and network counters', 'Grouping the returned containers by workload'],
@@ -226,12 +260,12 @@ async function statusPayload() {
   return { embeds: [statusEmbed(data)], components: panelRows(true) };
 }
 
-async function panelPayload() {
+async function panelPayload(force = false) {
   const [data, services, media, updates, mediaSummary] = await Promise.all([
     agent.status(),
     agent.services(),
     agent.media(),
-    agent.updates().catch((error) => ({ available: false, detail: error.message })),
+    updatesCheck(force).catch((error) => ({ available: false, detail: error.message })),
     agent.mediaSummary().catch(() => null),
   ]);
   return { embeds: [panelEmbed(data, services, media, updates, mediaSummary)], components: panelRows() };
@@ -260,17 +294,27 @@ async function servicesPayload() {
 }
 
 async function networkPayload() {
-  const [network, summary, status] = await Promise.all([
+  const [network, summary, status, connectivity] = await Promise.all([
     agent.network(),
     agent.networkSummary().catch(() => null),
     agent.status().catch(() => ({})),
+    agent.networkConnectivity().catch(() => null),
   ]);
-  return { embeds: [networkEmbed(network, summary, status)], components: panelRows(true) };
+  return { embeds: [networkEmbed(network, summary, status, connectivity)], components: panelRows(true) };
 }
 
 async function controlsPayload(page = 0, allowActions = true) {
   const [services, policy] = await Promise.all([agent.services(), agent.controlPolicy()]);
   return { embeds: [controlsEmbed(services, policy, { page, allowActions })], components: controlsRows(services, policy, { page, allowActions }) };
+}
+
+async function settingsPayload(category = 'home', page = 0) {
+  const [settings, status, policy] = await Promise.all([
+    Promise.resolve(readSettings()),
+    agent.status().catch(() => ({})),
+    category === 'controls' ? agent.controlPolicy().catch(() => null) : Promise.resolve(null),
+  ]);
+  return { embeds: [settingsEmbed(settings, status, policy, category)], components: settingsRows(settings, category, policy, page) };
 }
 
 function stopTasksLive(messageId) {
@@ -420,7 +464,7 @@ async function reportPayload() {
 
 async function updatesPayload(force = false, allowActions = true) {
   const [snapshot, systemUpdates] = await Promise.all([
-    agent.updates(force),
+    updatesCheck(force),
     agent.systemUpdates(force).catch((error) => ({ available: false, detail: error.message })),
   ]);
   return { embeds: [updatesEmbed(snapshot, systemUpdates)], components: updatesRows(snapshot, systemUpdates, allowActions) };
@@ -487,9 +531,14 @@ async function runSystemRebootWorkflow(interaction, jobId) {
   await interaction.update({ embeds: [base(`${osName} // restart requested`, `🟡 Sending the confirmed restart request to the guarded host bridge…`).setColor(colors.warn)], components: [] });
   try {
     await notifyMaintenanceEvent('Host restart starting', `${osName} updates are applied. The host restart was explicitly confirmed; the controller will post again when the server is back online.`, colors.warn);
+    // Persist the Discord webhook handle before asking the root bridge to
+    // reboot. The process may disappear immediately after that request, so a
+    // normal in-memory wait cannot reliably produce the completion message.
+    stageHostRebootResume(interaction, jobId, osName);
     await agent.requestSystemReboot(jobId, interaction.user);
-    await interaction.editReply({ embeds: [base(`${osName} // restart queued`, '🟡 The host is restarting now. The bot will announce its return in the weekly health channel when the server is back online.').setColor(colors.warn)], components: [] });
+    await interaction.editReply({ embeds: [base(`${osName} // restart queued`, '🟡 The host is restarting now. This message will be updated after the new boot is verified.').setColor(colors.warn)], components: [] });
   } catch (error) {
+    clearHostRebootResume();
     await interaction.editReply({ embeds: [errorEmbed(error.message)], components: [] });
   }
 }
@@ -501,8 +550,8 @@ async function runBotReleaseWorkflow(interaction, action, selectedVersion = '') 
   await interaction.update({ embeds: [botReleaseLoadingEmbed(action, release, tick)], components: [] });
   try {
     accepted = action === 'rollback'
-      ? await agent.rollbackBot(interaction.user, selectedVersion)
-      : await agent.updateBot(interaction.user);
+      ? await agent.rollbackBot(interaction.user, selectedVersion, releaseChannel())
+      : await agent.updateBot(interaction.user, false, releaseChannel());
     stageBotReleaseResume(interaction, action, accepted);
     release = { ...release, ...accepted, phase: 'queued' };
     await interaction.editReply({ embeds: [botReleaseLoadingEmbed(action, release, tick)], components: [] });
@@ -510,7 +559,7 @@ async function runBotReleaseWorkflow(interaction, action, selectedVersion = '') 
     while (Date.now() < deadline) {
       await delay(2200);
       tick += 1;
-      const snapshot = await agent.updates(true);
+      const snapshot = await updatesCheck(true);
       release = snapshot.bot || { ...release, phase: 'failed', detail: 'The agent did not return bot release status' };
       await interaction.editReply({ embeds: [botReleaseLoadingEmbed(action, release, tick)], components: [] });
       if (release.job_id && accepted.job_id && release.job_id !== accepted.job_id) {
@@ -538,6 +587,40 @@ async function runBotReleaseWorkflow(interaction, action, selectedVersion = '') 
   }
 }
 
+async function runBotMaintenanceWorkflow(interaction, action) {
+  let release = { phase: 'queued', detail: 'Waiting for the guarded host bridge' };
+  let accepted = null;
+  let tick = 0;
+  await interaction.update({ embeds: [botMaintenanceLoadingEmbed(action, release, tick)], components: [] });
+  try {
+    const operation = action === 'restart' ? agent.restartBot : action === 'reset' ? agent.resetSettings : action === 'restore' ? agent.restoreSettings : (user) => agent.repairBot(user, action === 'fix-fresh');
+    accepted = await operation(interaction.user);
+    stageBotMaintenanceResume(interaction, action, accepted);
+    release = { ...release, ...accepted, phase: 'queued' };
+    await interaction.editReply({ embeds: [botMaintenanceLoadingEmbed(action, release, tick)], components: [] });
+    const deadline = Date.now() + 20 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await delay(2200);
+      tick += 1;
+      const snapshot = await updatesCheck(true);
+      release = snapshot.bot || { ...release, phase: 'failed', detail: 'The agent did not return maintenance status' };
+      await interaction.editReply({ embeds: [botMaintenanceLoadingEmbed(action, release, tick)], components: [] });
+      if (accepted.job_id && release.job_id && accepted.job_id !== release.job_id) continue;
+      if (['complete', 'failed'].includes(String(release.phase || '').toLowerCase())) break;
+    }
+    if (!['complete', 'failed'].includes(String(release.phase || '').toLowerCase())) release = { ...release, phase: 'failed', detail: 'Timed out waiting for the guarded host bridge' };
+    await interaction.editReply({ embeds: [botMaintenanceResultEmbed(action, release)], components: settingsRows(readSettings(), 'recovery') });
+    clearBotMaintenanceResume();
+  } catch (error) {
+    if (accepted) {
+      await interaction.editReply({ embeds: [botMaintenanceRestartEmbed(action, release)], components: [] }).catch(() => {});
+      return;
+    }
+    clearBotMaintenanceResume();
+    await interaction.editReply({ embeds: [errorEmbed(error.message)], components: settingsRows(readSettings(), 'recovery') }).catch(() => {});
+  }
+}
+
 export async function handleCommand(interaction) {
   const publicOutputCommands = new Set(['panel', 'status', 'services', 'minecraft', 'media', 'storage', 'tasks', 'network', 'health', 'report', 'audit', 'updates', 'help', 'ping']);
   const publicOutput = publicOutputCommands.has(interaction.commandName) && interaction.options.getBoolean('public') === true;
@@ -545,8 +628,8 @@ export async function handleCommand(interaction) {
   await interaction.deferReply({ ephemeral: !publicOutput });
   let stopLoadingAnimation = null;
   let initialTaskSnapshot = null;
-  if (interaction.commandName === 'health' || interaction.commandName === 'report' || interaction.commandName === 'panel' || interaction.commandName === 'updates' || interaction.commandName === 'tasks' || interaction.commandName === 'media' || interaction.commandName === 'network') {
-    const title = interaction.commandName === 'report' ? 'Building detailed report…' : interaction.commandName === 'health' ? 'Running health diagnostic…' : interaction.commandName === 'updates' ? 'Checking application updates…' : interaction.commandName === 'tasks' ? 'Sampling Docker resources…' : interaction.commandName === 'media' ? 'Checking detected media…' : interaction.commandName === 'network' ? 'Checking detected network services…' : 'Loading control centre…';
+  if (interaction.commandName === 'health' || interaction.commandName === 'report' || interaction.commandName === 'panel' || interaction.commandName === 'updates' || interaction.commandName === 'tasks' || interaction.commandName === 'media' || interaction.commandName === 'network' || interaction.commandName === 'settings') {
+    const title = interaction.commandName === 'report' ? 'Building detailed report…' : interaction.commandName === 'health' ? 'Running health diagnostic…' : interaction.commandName === 'updates' ? 'Checking application updates…' : interaction.commandName === 'tasks' ? 'Sampling Docker resources…' : interaction.commandName === 'media' ? 'Checking detected media…' : interaction.commandName === 'network' ? 'Checking detected network services…' : interaction.commandName === 'settings' ? 'Reading settings…' : 'Loading control centre…';
     stopLoadingAnimation = await beginLoadingAnimation(interaction, title, interaction.commandName);
   }
   try {
@@ -557,9 +640,14 @@ export async function handleCommand(interaction) {
       case 'health': payload = await healthPayload(); break;
       case 'services': payload = await servicesPayload(); break;
       case 'network': payload = await networkPayload(); break;
+      case 'settings': payload = await settingsPayload(); break;
       case 'controls': payload = await controlsPayload(0, isAdmin(interaction)); break;
       case 'help': payload = { embeds: [helpEmbed()], components: panelRows(true) }; break;
-      case 'ping': payload = { embeds: [pingEmbed({ processingMs: Date.now() - commandStartedAt, websocketMs: interaction.client?.ws?.ping })], components: panelRows(true) }; break;
+      case 'ping': {
+        const connectivity = await agent.ping().catch(() => null);
+        payload = { embeds: [pingEmbed({ processingMs: Date.now() - commandStartedAt, websocketMs: interaction.client?.ws?.ping, gatewayMs: connectivity?.gateway?.latency_ms, gatewayReachable: connectivity?.gateway?.reachable, dnsConfigured: connectivity?.dns?.configured, dnsReachable: connectivity?.dns?.reachable })], components: panelRows(true) };
+        break;
+      }
       case 'minecraft': payload = await minecraftPayload(); break;
       case 'media': payload = await mediaPayload(); break;
       case 'storage': payload = { embeds: [storageEmbed(await agent.status())], components: panelRows(true) }; break;
@@ -606,6 +694,7 @@ export async function handleCommand(interaction) {
       default: throw new Error('Unknown command');
     }
     if (stopLoadingAnimation) await stopLoadingAnimation();
+    attachPostUpdateNotice(payload);
     const message = await interaction.editReply(payload);
     if (interaction.commandName === 'tasks') startTasksLive(interaction, message?.id || interaction.id, initialTaskSnapshot);
   } catch (error) {
@@ -636,10 +725,14 @@ export async function handleComponent(interaction) {
       await interaction.deferUpdate();
       let taskSnapshot = null;
       let payload;
-      if (target === 'panel') payload = await panelPayload();
+      if (target === 'panel') payload = await panelPayload(true);
       else if (target === 'services') payload = await servicesPayload();
       else if (target === 'network') payload = await networkPayload();
       else if (target === 'controls') payload = await controlsPayload(0, isAdmin(interaction));
+      else if (target === 'settings') {
+        if (!isAdmin(interaction)) throw new Error('Administrator access is required for settings');
+        payload = await settingsPayload();
+      }
       else if (target === 'minecraft') payload = await minecraftPayload();
       else if (target === 'storage') payload = { embeds: [storageEmbed(await agent.status())], components: panelRows(true) };
       else if (target === 'media') payload = await mediaPayload();
@@ -666,6 +759,162 @@ export async function handleComponent(interaction) {
       return;
     }
 
+    if (interaction.customId === 'settings:back' || interaction.customId === 'settings:home') {
+      if (!isAdmin(interaction)) throw new Error('Administrator access is required for settings');
+      await interaction.deferUpdate();
+      await interaction.editReply(await settingsPayload());
+      return;
+    }
+
+    if (interaction.customId.startsWith('settings:category:')) {
+      if (!isAdmin(interaction)) throw new Error('Administrator access is required for settings');
+      const category = interaction.customId.slice('settings:category:'.length);
+      if (!['access', 'updates', 'controls', 'recovery', 'status'].includes(category)) throw new Error('Unknown settings category');
+      await interaction.deferUpdate();
+      await interaction.editReply(await settingsPayload(category));
+      return;
+    }
+
+    if (interaction.customId === 'settings:auto-mode') {
+      if (!isAdmin(interaction)) throw new Error('Administrator access is required to change update settings');
+      const mode = interaction.values?.[0];
+      if (!mode) throw new Error('Choose an automatic update mode first');
+      const settings = readSettings();
+      if (settings.releaseChannel === 'beta' && mode !== 'off' && settings.betaAutoUpdateConfirmed !== true) {
+        throw new Error('Beta automatic updates are locked. Open Settings → Updates and acknowledge the beta live-patch route first.');
+      }
+      await interaction.deferUpdate();
+      updateSettings({ autoUpdateMode: mode });
+      await interaction.editReply(await settingsPayload('updates'));
+      return;
+    }
+
+    if (interaction.customId === 'settings:release-channel') {
+      if (!isAdmin(interaction)) throw new Error('Administrator access is required to change the release stream');
+      const channel = interaction.values?.[0];
+      if (!['stable', 'beta'].includes(channel)) throw new Error('Choose a release stream first');
+      await interaction.deferUpdate();
+      const current = readSettings();
+      const enteringBeta = channel === 'beta' && current.releaseChannel !== 'beta';
+      updateSettings({
+        releaseChannel: channel,
+        // Switching into beta always returns to a safe manual state.  The
+        // administrator must acknowledge the live-patch warning again before
+        // selecting an automatic schedule.
+        ...(enteringBeta ? { betaAutoUpdateConfirmed: false, autoUpdateMode: 'off' } : {}),
+      });
+      await interaction.editReply(await settingsPayload('updates'));
+      return;
+    }
+
+    if (interaction.customId === 'settings:beta-acknowledge') {
+      if (!isAdmin(interaction)) throw new Error('Administrator access is required to acknowledge beta updates');
+      if (readSettings().releaseChannel !== 'beta') throw new Error('Select the Beta stream before acknowledging its live-patch route');
+      await interaction.deferUpdate();
+      updateSettings({ betaAutoUpdateConfirmed: true });
+      await interaction.editReply(await settingsPayload('updates'));
+      return;
+    }
+
+    if (interaction.customId === 'settings:beta-revoke') {
+      if (!isAdmin(interaction)) throw new Error('Administrator access is required to revoke beta updates');
+      if (readSettings().releaseChannel !== 'beta') throw new Error('Beta stream is not selected');
+      await interaction.deferUpdate();
+      updateSettings({ betaAutoUpdateConfirmed: false, autoUpdateMode: 'off' });
+      await interaction.editReply(await settingsPayload('updates'));
+      return;
+    }
+
+    if (interaction.customId.startsWith('settings:add:')) {
+      if (!isSuperuser(interaction)) throw new Error('Only a superuser can add administrators or superusers');
+      const kind = interaction.customId.slice('settings:add:'.length);
+      if (!['adminUserIds', 'guestUserIds', 'superuserIds'].includes(kind)) throw new Error('Unknown identity list');
+      const labels = { adminUserIds: 'administrator', guestUserIds: 'guest', superuserIds: 'superuser' };
+      const modal = new ModalBuilder().setCustomId(`settings:add-submit:${kind}`).setTitle(`Add ${labels[kind]}`);
+      modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('discord_id').setLabel('Discord user ID').setPlaceholder('15–25 digits').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(25)));
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.customId === 'settings:remove') {
+      if (!isSuperuser(interaction)) throw new Error('Only a superuser can remove administrators, guests or superusers');
+      const id = interaction.values?.[0];
+      const state = readSettings();
+      const kind = (state.superuserIds || []).includes(id)
+        ? 'superuserIds'
+        : (state.adminUserIds || []).includes(id) ? 'adminUserIds' : 'guestUserIds';
+      removeIdentity(kind, id);
+      await interaction.deferUpdate();
+      await interaction.editReply(await settingsPayload('access'));
+      return;
+    }
+
+    if (interaction.customId === 'settings:control-mode') {
+      if (!isAdmin(interaction)) throw new Error('Administrator access is required to change control mode');
+      const mode = interaction.values?.[0];
+      if (!mode) throw new Error('Choose a control mode first');
+      await interaction.deferUpdate();
+      await agent.setControlMode(mode, interaction.user);
+      updateSettings({ serviceControlMode: mode });
+      await interaction.editReply(await settingsPayload('controls'));
+      return;
+    }
+
+    if (interaction.customId.startsWith('settings-control:select')) {
+      await interaction.deferUpdate();
+      const policy = await agent.controlPolicy();
+      const service = (policy.services || []).find((item) => item.key === interaction.values[0]);
+      if (!service) throw new Error('Container no longer exists; refresh the controls settings');
+      const parts = interaction.customId.split(':');
+      const page = Math.max(0, Number(parts[2] || 1) - 1);
+      await interaction.editReply({
+        embeds: [controlsEmbed([service], policy, { detail: true, selectedKey: service.key, page, allowActions: true })],
+        components: controlsRows([service], policy, { detail: true, selectedKey: service.key, page, allowActions: true, backTarget: 'settings', backLabel: 'Back to settings', modeCustomId: 'settings:control-mode', selectPrefix: 'settings-control:select', togglePrefix: 'settings-control-toggle' }),
+      });
+      return;
+    }
+
+    if (interaction.customId.startsWith('settings-control-toggle:')) {
+      if (!isAdmin(interaction)) throw new Error('Administrator access is required to change controls');
+      const [, key, value] = interaction.customId.split(':');
+      await interaction.deferUpdate();
+      await agent.setControlPolicy(key, value === 'on', interaction.user);
+      await interaction.editReply(await settingsPayload('controls'));
+      return;
+    }
+
+    if (interaction.customId === 'settings:linux-updates') {
+      if (!isAdmin(interaction)) throw new Error('Administrator access is required for host updates');
+      await interaction.deferUpdate();
+      await interaction.editReply(await updatesPayload(true, true));
+      return;
+    }
+
+    if (interaction.customId === 'settings:restart' || interaction.customId === 'settings:reset' || interaction.customId === 'settings:restore' || interaction.customId === 'settings:fix-preserve' || interaction.customId === 'settings:fix-fresh') {
+      if (!isAdmin(interaction)) throw new Error('Administrator access is required for recovery actions');
+      const type = interaction.customId.slice('settings:'.length);
+      if (type === 'fix-fresh' && !isSuperuser(interaction)) throw new Error('Only a superuser can start a fresh reinstall');
+      const labels = {
+        restart: ['Confirm bot restart', 'Restart the control agent and Discord bot using the guarded hand-off? A short period of silence is expected; the bot will report back after both health checks pass.'],
+        reset: ['Confirm settings reset', 'Back up the current settings, then clear the config file and runtime settings? The backup is kept privately so you can restore it later. If this config file also supplies Compose values, the running containers stay online until you restore it or provide a new configuration.'],
+        restore: ['Confirm settings restore', 'Restore the most recent settings backup? This replaces the runtime overlay and keeps the current file as a backup.'],
+        'fix-preserve': ['Confirm bot repair', 'Reinstall the control containers while preserving the current configuration and runtime settings?'],
+        'fix-fresh': ['Confirm fresh reinstall', '⚠️ This is a dangerous action. Back up the configuration, reset it to defaults, and reinstall the control containers? You will need to configure Discord again.'],
+      };
+      const [title, description] = labels[type];
+      const id = stageConfirmation(interaction.user.id, { type: `settings-${type}` });
+      await interaction.reply({ ephemeral: true, embeds: [base(title, description).setColor(type === 'fix-fresh' || type === 'reset' ? colors.bad : colors.warn)], components: confirmRows(id) });
+      return;
+    }
+
+    if (interaction.customId.startsWith('settings-controls:page:')) {
+      if (!isAdmin(interaction)) throw new Error('Administrator access is required for settings');
+      const page = Math.max(0, Number(interaction.customId.split(':')[2] || 1) - 1);
+      await interaction.deferUpdate();
+      await interaction.editReply(await settingsPayload('controls', page));
+      return;
+    }
+
     if (interaction.customId.startsWith('controls:page:')) {
       const page = Math.max(0, Number(interaction.customId.split(':')[2] || 1) - 1);
       await interaction.deferUpdate();
@@ -673,11 +922,20 @@ export async function handleComponent(interaction) {
       return;
     }
 
+    if (interaction.customId.startsWith('settings-controls:refresh')) {
+      if (!isAdmin(interaction)) throw new Error('Administrator access is required for settings');
+      await interaction.deferUpdate();
+      const page = Math.max(0, Number(interaction.customId.split(':')[2] || 1) - 1);
+      await interaction.editReply(await settingsPayload('controls', page));
+      return;
+    }
+
     if (interaction.customId.startsWith('controls:refresh') || interaction.customId.startsWith('control:back')) {
       const parts = interaction.customId.split(':');
       const page = Math.max(0, Number(parts[2] || 1) - 1);
       await interaction.deferUpdate();
-      await interaction.editReply(await controlsPayload(page, isAdmin(interaction)));
+      if (parts.at(-1) === 'settings') await interaction.editReply(await settingsPayload('controls', page));
+      else await interaction.editReply(await controlsPayload(page, isAdmin(interaction)));
       return;
     }
 
@@ -725,10 +983,10 @@ export async function handleComponent(interaction) {
 
     if (interaction.customId === 'updates:bot-update') {
       if (!isAdmin(interaction)) throw new Error('Admin access is required for bot updates');
-      const snapshot = await agent.updates(true);
+      const snapshot = await updatesCheck(true);
       const release = snapshot.bot;
       if (!release?.configured) throw new Error(release?.detail || 'Configure a GitHub repository before updating the bot');
-      if (!release.update_available) throw new Error('No newer stable bot release is available; refresh the update view');
+      if (!release.update_available) throw new Error(`No newer ${release.channel || releaseChannel()} bot release is available; refresh the update view`);
       if (!release.asset_verified) throw new Error(release.detail || 'The release archive does not have a verified SHA-256 digest');
       if (!release.update_supported) throw new Error('The guarded host release bridge is not configured');
       const id = stageConfirmation(interaction.user.id, { type: 'bot-update', version: release.latest });
@@ -742,7 +1000,7 @@ export async function handleComponent(interaction) {
 
     if (interaction.customId === 'updates:bot-rollback-options' || interaction.customId === 'updates:bot-rollback') {
       if (!isAdmin(interaction)) throw new Error('Admin access is required for bot rollback');
-      const snapshot = await agent.updates(true);
+      const snapshot = await updatesCheck(true);
       const release = snapshot.bot;
       const options = Array.isArray(release?.rollback_options)
         ? release.rollback_options
@@ -759,7 +1017,7 @@ export async function handleComponent(interaction) {
 
     if (interaction.customId === 'updates:bot-rollback-retained') {
       if (!isAdmin(interaction)) throw new Error('Admin access is required for bot rollback');
-      const snapshot = await agent.updates(true);
+      const snapshot = await updatesCheck(true);
       const release = snapshot.bot;
       if (!release?.update_supported) throw new Error('The guarded host release bridge is not configured');
       if (!release?.rollback_available || release?.rollback_source !== 'local') throw new Error('The retained local rollback is no longer available; open Rollback options again to refresh');
@@ -782,7 +1040,7 @@ export async function handleComponent(interaction) {
       const requestedVersion = interaction.customId === 'updates:bot-rollback-select'
         ? interaction.values?.[0]
         : interaction.customId.slice('updates:bot-rollback-version:'.length);
-      const snapshot = await agent.updates(true);
+      const snapshot = await updatesCheck(true);
       const release = snapshot.bot;
       if (!release?.update_supported) throw new Error('The guarded host release bridge is not configured');
       const selection = selectedRollback(release, requestedVersion);
@@ -852,7 +1110,7 @@ export async function handleComponent(interaction) {
     if (interaction.customId === 'updates:select') {
       if (!isAdmin(interaction)) throw new Error('Admin access is required for Runtipi updates');
       const appId = interaction.values[0];
-      const snapshot = await agent.updates();
+      const snapshot = await updatesCheck();
       const update = (snapshot.updates || []).find((item) => item.id === appId);
       if (!update) throw new Error('That update is no longer available; refresh the list and try again');
       const id = stageConfirmation(interaction.user.id, { type: 'runtipi', scope: 'one', appId: update.id, label: update.label, current: update.current, latest: update.latest });
@@ -960,6 +1218,10 @@ export async function handleComponent(interaction) {
         await runBotReleaseWorkflow(interaction, 'rollback', pending.selectedVersion || pending.version);
         return;
       }
+      if (pending.type.startsWith('settings-')) {
+        await runBotMaintenanceWorkflow(interaction, pending.type.slice('settings-'.length));
+        return;
+      }
       if (pending.type === 'runtipi') {
         await interaction.update({ embeds: [updateLoadingEmbed(pending.scope === 'all' ? 'Updating Runtipi apps…' : `Updating ${pending.label}…`, 0, 0)], components: [] });
         let tick = 0;
@@ -1026,6 +1288,22 @@ export async function handleComponent(interaction) {
 const consoleDeny = /^(stop|restart|reload|op|deop|whitelist\s+off|ban-ip|pardon-ip)\b/i;
 
 export async function handleModal(interaction) {
+  if (interaction.customId.startsWith('settings:add-submit:')) {
+    if (!isSuperuser(interaction)) {
+      await interaction.reply({ ephemeral: true, content: 'Only a superuser can change the access lists.' });
+      return;
+    }
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const kind = interaction.customId.slice('settings:add-submit:'.length);
+      const id = interaction.fields.getTextInputValue('discord_id').trim();
+      addIdentity(kind, id);
+      await interaction.editReply(await settingsPayload('access'));
+    } catch (error) {
+      await interaction.editReply({ embeds: [errorEmbed(error.message)], components: settingsRows(readSettings(), 'access') });
+    }
+    return;
+  }
   if (!interaction.customId.startsWith('mc-console-submit:')) return;
   if (!isAdmin(interaction)) {
     await interaction.reply({ ephemeral: true, content: 'Admin access is required for console commands.' });

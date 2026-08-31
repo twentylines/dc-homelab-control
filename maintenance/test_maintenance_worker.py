@@ -19,6 +19,8 @@ class MaintenanceWorkerTest(unittest.TestCase):
         self.assertLess(self.module._release_version_key("0.3.19-rc.1"), self.module._release_version_key("0.3.19"))
         self.assertGreater(self.module._release_version_key("0.3.22b"), self.module._release_version_key("0.3.22"))
         self.assertGreater(self.module._release_version_key("0.3.22c"), self.module._release_version_key("0.3.22b"))
+        self.assertGreater(self.module._release_version_key("0.4.0-beta.10"), self.module._release_version_key("0.4.0-beta.2"))
+        self.assertGreater(self.module._release_version_key("0.4.0"), self.module._release_version_key("0.4.0-rc.1"))
         self.assertEqual(self.module.bot_version("v0.3.22B"), "0.3.22b")
         self.assertEqual(self.module.bot_version("v0.3.22D"), "0.3.22d")
         self.assertIsNone(self.module._release_version_key("latest"))
@@ -105,6 +107,29 @@ class MaintenanceWorkerTest(unittest.TestCase):
         self.assertTrue(self.module.looks_like_bot_status({"current_version": "0.3.21"}))
         self.assertTrue(self.module.looks_like_bot_status({"kind": "bot", "phase": "restarting"}))
         self.assertFalse(self.module.looks_like_bot_status({"kind": "host", "phase": "restarting"}))
+
+    def test_settings_reset_clears_config_and_runtime_files_after_backup(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            config = root / "config.env"
+            runtime = root / "settings.json"
+            config.write_text("BOT_NAME=Private\n", encoding="utf-8")
+            runtime.write_text('{"autoUpdateMode":"daily"}\n', encoding="utf-8")
+            with patch.object(self.module, "CONTROL_CONFIG_FILE", config), \
+                    patch.object(self.module, "BOT_SETTINGS_FILE", runtime), \
+                    patch.object(self.module, "SETTINGS_BACKUP_ROOT", root / "backups"):
+                config_backup = self.module._backup_control_config()
+                runtime_backup = self.module._backup_runtime_settings()
+                self.assertTrue(self.module._reset_control_config())
+                self.assertTrue(self.module._reset_runtime_settings())
+            self.assertEqual(config.read_text(encoding="utf-8"), "")
+            self.assertEqual(runtime.read_text(encoding="utf-8"), "{}\n")
+            self.assertIsNotNone(config_backup)
+            self.assertIsNotNone(runtime_backup)
+            self.assertEqual(pathlib.Path(config_backup).read_text(encoding="utf-8"), "BOT_NAME=Private\n")
+            self.assertEqual(pathlib.Path(runtime_backup).read_text(encoding="utf-8"), '{"autoUpdateMode":"daily"}\n')
 
 
 if __name__ == "__main__":

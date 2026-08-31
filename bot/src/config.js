@@ -62,8 +62,8 @@ if (controlMode && !['opt-in', 'opt-out'].includes(controlMode)) {
 }
 
 const releaseChannel = bounded(optional('HOMELAB_CONTROL_RELEASE_CHANNEL'), 'stable', 16).toLowerCase();
-if (!['stable'].includes(releaseChannel)) {
-  throw new Error('HOMELAB_CONTROL_RELEASE_CHANNEL must be stable');
+if (!['stable', 'beta'].includes(releaseChannel)) {
+  throw new Error('HOMELAB_CONTROL_RELEASE_CHANNEL must be stable or beta');
 }
 
 const minecraftBackend = bounded(optional('MINECRAFT_BACKEND'), 'auto', 24).toLowerCase();
@@ -80,6 +80,7 @@ export const config = Object.freeze({
   adminRoleId: adminRoleIds[0] || '',
   adminUserIds: list('DISCORD_ADMIN_USER_IDS'),
   adminRoleIds,
+  superuserIds: list('DISCORD_SUPERUSER_IDS'),
   guestUserIds: list('DISCORD_GUEST_USER_IDS'),
   guestRoleIds: list('DISCORD_GUEST_ROLE_IDS'),
   botName: bounded(optional('BOT_NAME'), 'Homelab Control'),
@@ -93,6 +94,12 @@ export const config = Object.freeze({
   agentUrl: optional('HOMELAB_CONTROL_AGENT_URL') || 'http://agent:8787',
   repository: bounded(optional('HOMELAB_CONTROL_REPOSITORY'), '', 180),
   releaseChannel,
+  autoUpdateMode: ['off', 'daily', 'weekly', 'hotfix'].includes(optional('HOMELAB_CONTROL_AUTO_UPDATE_MODE').toLowerCase())
+    ? optional('HOMELAB_CONTROL_AUTO_UPDATE_MODE').toLowerCase() : 'off',
+  autoUpdateHour: Number.isInteger(Number(optional('HOMELAB_CONTROL_AUTO_UPDATE_HOUR')))
+    && Number(optional('HOMELAB_CONTROL_AUTO_UPDATE_HOUR')) >= 0
+    && Number(optional('HOMELAB_CONTROL_AUTO_UPDATE_HOUR')) <= 23
+    ? Number(optional('HOMELAB_CONTROL_AUTO_UPDATE_HOUR')) : 4,
   controlToken,
   craftyUrl: optional('CRAFTY_BASE_URL'),
   craftyToken: optional('CRAFTY_API_TOKEN'),

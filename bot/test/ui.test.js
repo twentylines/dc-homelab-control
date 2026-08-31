@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { actionLoadingEmbed, bar, base, botReleaseLoadingEmbed, botReleaseRestartEmbed, botReleaseResultEmbed, botReleaseSummary, botRollbackConfirmationEmbed, botRollbackOptionsEmbed, botRollbackOptionsRows, botUpdateConfirmationEmbed, bytes, controlsEmbed, controlsRows, duration, healthEmbed, helpEmbed, hostUpdateSummary, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, networkEmbed, operatingSystemLabel, operatingSystemShortLabel, panelEmbed, pingEmbed, reportEmbeds, serviceRows, servicesEmbed, statusEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows } from '../src/ui.js';
+import { actionLoadingEmbed, bar, base, botMaintenanceLoadingEmbed, botMaintenanceRestartEmbed, botMaintenanceResultEmbed, botReleaseLoadingEmbed, botReleaseRestartEmbed, botReleaseResultEmbed, botReleaseSummary, botRollbackConfirmationEmbed, botRollbackOptionsEmbed, botRollbackOptionsRows, botUpdateConfirmationEmbed, bytes, controlsEmbed, controlsRows, duration, healthEmbed, helpEmbed, hostRestartResultEmbed, hostRestartWaitingEmbed, hostUpdateSummary, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, networkEmbed, operatingSystemLabel, operatingSystemShortLabel, panelEmbed, panelRows, pingEmbed, postUpdateNoticeEmbed, reportEmbeds, serviceRows, servicesEmbed, settingsEmbed, settingsRows, statusEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows, weeklyHealthEmbed } from '../src/ui.js';
 import { minecraftInternals } from '../src/minecraft.js';
 
 const sampleStatus = {
@@ -60,6 +60,62 @@ test('shared footer keeps operational notes compact and consistent', () => {
   assert.equal(embed.footer.text, 'Verification: backup requested · service ping required');
   assert.ok(embed.timestamp);
   assert.doesNotMatch(embed.fields?.[0]?.value || '', /Verification/);
+});
+
+test('scheduled OTA completion is a compact separate embed', () => {
+  const embed = postUpdateNoticeEmbed({ version: '0.4.0a', previous: '0.4.0' }).toJSON();
+  assert.equal(embed.title, 'Homelab Control // update complete');
+  assert.match(embed.description, /scheduled bot update.*0\.4\.0a/i);
+  assert.match(embed.description, /from \*\*0\.4\.0\*\*/i);
+  assert.equal(embed.footer.text, 'Automatic update · shown once after restart');
+});
+
+test('weekly report keeps the compact health card and adds updates with consistent bars', () => {
+  const embed = weeklyHealthEmbed(sampleStatus, sampleServices, sampleMedia, {
+    available: true,
+    os: sampleStatus.os,
+    pending_count: 2,
+    security_count: 1,
+  }, {
+    available: true,
+    updates: [{ label: 'Filebrowser', current: '1', latest: '2' }],
+    bot: { configured: true, available: true, update_available: false, current: '0.4.0' },
+  }, { assessed: true, complete: true, missing: [] }).toJSON();
+  assert.equal(embed.title, 'atlas Weekly Health');
+  assert.match(embed.description, /All monitored systems healthy/);
+  assert.match(embed.fields.find((field) => field.name === '💾 Storage usage').value, /▰/);
+  assert.match(embed.fields.find((field) => field.name === '💾 Storage usage').value, /46\.6 \/ 433\.1 GiB/);
+  assert.match(embed.fields.find((field) => field.name === '⬆️ Updates').value, /Runtipi apps.*1 available/s);
+  assert.match(embed.fields.find((field) => field.name === '⬆️ Updates').value, /Filebrowser.*1 → 2/s);
+  assert.match(embed.fields.find((field) => field.name === '⬆️ Updates').value, /Ubuntu.*2 pending/s);
+  assert.match(embed.fields.find((field) => field.name === '📦 Containers').value, /Media.*1\/1 online/);
+  assert.ok(embed.fields.every((field) => field.value.length <= 1024));
+});
+
+test('weekly report omits optional sections that have no data', () => {
+  const minimal = weeklyHealthEmbed({
+    hostname: 'atlas', timestamp: new Date().toISOString(), uptime_seconds: 60,
+    memory: { used: 1, total: 2, swap_total: 0 },
+    storage: [{ label: 'System', used: 1, total: 2, percent: 50 }],
+    containers: { running: 1, total: 1, unhealthy: [] },
+    drives: [],
+  }, [], [], null, { available: false, bot: { configured: false } }, null).toJSON();
+  assert.equal(minimal.fields.some((field) => field.name.startsWith('🩺 Drive health')), false);
+  assert.equal(minimal.fields.some((field) => field.name === '⬆️ Updates'), false);
+});
+
+test('weekly report keeps missing measurements honest instead of displaying zeroes', () => {
+  const embed = weeklyHealthEmbed({
+    hostname: 'atlas', timestamp: new Date().toISOString(),
+    cpu_percent: null, temperature_c: null, memory: { used: null, total: null, swap_total: null },
+    storage: [{ label: 'System', used: null, total: null, percent: null }],
+    containers: { running: null, total: null }, drives: [],
+  }, [], []).toJSON();
+  const system = embed.fields.find((field) => field.name === '⚙️ System').value;
+  assert.match(system, /CPU\*\* not reported/);
+  assert.match(system, /Memory\*\* not reported/);
+  assert.match(embed.fields.find((field) => field.name === '⏱️ Runtime').value, /not reported/);
+  assert.match(embed.fields.find((field) => field.name === '💾 Storage usage').value, /not reported/);
 });
 
 test('status embed remains within Discord field limits', () => {
@@ -176,6 +232,8 @@ test('Plex-only media views do not claim that Jellyfin is missing', () => {
 
 test('panel, diagnostic, and detailed report have distinct titles and specs', () => {
   assert.equal(panelEmbed(sampleStatus, sampleServices, sampleMedia).toJSON().title, 'atlas // control centre');
+  const panelWithoutUpdates = panelEmbed(sampleStatus, sampleServices, sampleMedia).toJSON();
+  assert.doesNotMatch(panelWithoutUpdates.fields.find((field) => field.name === 'Software').value, /Runtipi apps/i);
   assert.equal(healthEmbed(sampleStatus, sampleServices, sampleMedia).toJSON().title, 'atlas // health diagnostic');
   const reports = reportEmbeds(sampleStatus, sampleServices, sampleMedia, []).map((embed) => embed.toJSON());
   assert.equal(reports.length, 2);
@@ -183,6 +241,13 @@ test('panel, diagnostic, and detailed report have distinct titles and specs', ()
   assert.match(reports[0].fields.find((field) => field.name.includes('Host specifications')).value, /2666 MHz/);
   assert.match(reports[0].fields.find((field) => field.name.includes('System telemetry')).value, /Load 1\/5\/15m/);
   assert.match(reports[1].fields.find((field) => field.name.includes('Services')).value, /running • process alive/);
+});
+
+test('panel refresh stays on the panel and all secondary views retain a back route', () => {
+  const panel = panelRows().flatMap((row) => row.toJSON().components || []);
+  assert.equal(panel[0].custom_id, 'nav:panel');
+  const detail = panelRows(true).flatMap((row) => row.toJSON().components || []);
+  assert.ok(detail.some((component) => component.custom_id === 'nav:panel'));
 });
 
 test('controls selection opens the selected container detail view', () => {
@@ -260,6 +325,7 @@ test('Runtipi update UI is bounded and separates status from actions', () => {
   assert.doesNotMatch(bulk.fields.find((field) => field.name === 'Results').value, /Docker ping OK/);
   assert.equal(updateResultRows()[0].components[0].data.custom_id, 'updates:back');
   assert.equal(updateResultRows()[0].components[0].data.label, 'Back to updates');
+  assert.match(botReleaseSummary({ configured: true, available: true, channel: 'beta', current: '0.4.0', latest: '0.4.1', update_available: true, asset_verified: true, update_supported: true }), /beta live-patch route.*acknowledgement/i);
 });
 
 test('bot release UI reports GitHub checks and exposes guarded update and rollback actions', () => {
@@ -301,7 +367,6 @@ test('bot release UI reports GitHub checks and exposes guarded update and rollba
   assert.match(botUpdateConfirmationEmbed({ latest: '0.3.18', asset_size: 1024 }).toJSON().description, /1 KB/);
   assert.doesNotMatch(botReleaseSummary({ ...snapshot.bot, asset_size: null }), /Source archive ·/);
   assert.match(botReleaseSummary(snapshot.bot), /from GitHub/);
-  assert.match(botReleaseSummary(snapshot.bot), /Manual update only/);
   assert.match(botReleaseSummary({ ...snapshot.bot, available: false, detail: 'GitHub latest unavailable' }), /Rollback options/);
   const rows = updatesRows(snapshot, true);
   assert.ok(rows.length <= 5);
@@ -348,6 +413,29 @@ test('bot release UI reports GitHub checks and exposes guarded update and rollba
   assert.match(rollback.description, /GitHub archive/);
 });
 
+test('settings controls keep the detected catalogue and return to settings', () => {
+  const rows = settingsRows({}, 'controls', {
+    mode: 'opt-out',
+    mode_description: 'Detected containers are controllable unless excluded.',
+    services: [{ key: 'jellyfin', label: 'Jellyfin', state: 'running', manageable: true, enabled: true }],
+  }).map((row) => row.toJSON());
+  assert.equal(rows[0].components[1].custom_id, 'nav:settings');
+  assert.ok(rows.flatMap((row) => row.components).some((component) => component.custom_id === 'settings-control:select:1:1'));
+});
+
+test('beta settings explain and gate the live-patch auto-update route', () => {
+  const locked = settingsEmbed({ releaseChannel: 'beta', autoUpdateMode: 'daily', betaAutoUpdateConfirmed: false }, {}, null, 'updates').toJSON();
+  assert.match(locked.fields.find((field) => field.name.includes('Beta live-patch')).value, /locked until an administrator acknowledges/i);
+  const lockedRows = settingsRows({ releaseChannel: 'beta', autoUpdateMode: 'daily', betaAutoUpdateConfirmed: false }, 'updates').flatMap((row) => row.toJSON().components);
+  assert.equal(lockedRows.find((component) => component.custom_id === 'settings:auto-mode').placeholder, 'Automatic updates · locked');
+  assert.ok(lockedRows.some((component) => component.custom_id === 'settings:beta-acknowledge'));
+
+  const acknowledged = settingsEmbed({ releaseChannel: 'beta', autoUpdateMode: 'daily', betaAutoUpdateConfirmed: true }, {}, null, 'updates').toJSON();
+  assert.match(acknowledged.fields.find((field) => field.name.includes('Beta live-patch')).value, /automatic updates are allowed/i);
+  const acknowledgedRows = settingsRows({ releaseChannel: 'beta', autoUpdateMode: 'daily', betaAutoUpdateConfirmed: true }, 'updates').flatMap((row) => row.toJSON().components);
+  assert.ok(acknowledgedRows.some((component) => component.custom_id === 'settings:beta-revoke'));
+});
+
 test('Ubuntu maintenance UI reports pending security work and guarded actions', () => {
   const system = {
     available: true,
@@ -373,6 +461,12 @@ test('Ubuntu maintenance UI reports pending security work and guarded actions', 
   assert.ok(systemUpdateResultEmbed(system).toJSON().fields.every((field) => field.value.length <= 1024));
   const report = reportEmbeds(sampleStatus, sampleServices, sampleMedia, [], system).map((item) => item.toJSON());
   assert.match(report[0].fields.find((field) => field.name === '🐧 Ubuntu update status').value, /Security/);
+});
+
+test('maintenance loading UI does not assume Ubuntu when host identity is unavailable', () => {
+  const embed = systemUpdateLoadingEmbed({ phase: 'queued' }, 0).toJSON();
+  assert.match(embed.title, /^Host \/\//);
+  assert.doesNotMatch(embed.title, /Ubuntu/i);
 });
 
 test('Ubuntu update summary explains security classification and phasing', () => {
@@ -560,4 +654,37 @@ test('services view includes auto-discovered containers and paginates selectors'
   assert.equal(rows[1].toJSON().components[0].options.length, 25);
   assert.equal(rows[2].toJSON().components[0].options.length, 3);
   assert.equal(rows[2].toJSON().components[0].custom_id, 'service:select:2');
+  assert.match(embed.footer.text, /lifecycle controls.*\/settings/i);
+});
+
+test('host restart hand-off has an honest waiting state and explicit post-boot completion', () => {
+  const waiting = hostRestartWaitingEmbed({ phase: 'rebooting', os: sampleStatus.os }).toJSON();
+  assert.match(waiting.title, /Ubuntu/);
+  assert.match(waiting.description, /Restarting the host/);
+  assert.match(waiting.description, /new boot/);
+  const result = hostRestartResultEmbed({ phase: 'online', os: sampleStatus.os, online_at: new Date().toISOString(), events: [{ message: 'The host is back online after the confirmed restart' }] }).toJSON();
+  assert.match(result.description, /Restarted successfully/);
+  assert.match(result.footer.text, /post-boot status verified/);
+});
+
+test('bot maintenance hand-off reports the selected recovery action after restart', () => {
+  const loading = botMaintenanceLoadingEmbed('reset', { phase: 'checking', events: [{ message: 'Private backup created' }] }, 1).toJSON();
+  assert.match(loading.title, /Resetting Homelab Control settings/);
+  assert.match(loading.description, /private backup/);
+  assert.match(loading.fields[0].value, /Private backup/);
+  const waiting = botMaintenanceRestartEmbed('restart').toJSON();
+  assert.match(waiting.description, /recreated/);
+  assert.match(waiting.description, /Bot restart verified/);
+  const result = botMaintenanceResultEmbed('restore', { phase: 'complete', current_version: '0.4.0', detail: 'Previous settings backup restored', events: [{ message: 'Control recovery completed and verified' }] }).toJSON();
+  assert.match(result.description, /Settings restore complete/);
+  assert.match(result.description, /0\.4\.0/);
+});
+
+test('settings controls category keeps the detected catalogue instead of rendering an empty selector', () => {
+  const rows = settingsRows({}, 'controls', {
+    mode: 'opt-out',
+    services: [{ key: 'jellyfin', label: 'Jellyfin', state: 'running', health: 'healthy', manageable: true, enabled: true }],
+  }).map((row) => row.toJSON());
+  assert.ok(rows.flatMap((row) => row.components).some((component) => component.custom_id === 'settings-control:select:1:1'));
+  assert.equal(rows[0].components[1].custom_id, 'nav:settings');
 });

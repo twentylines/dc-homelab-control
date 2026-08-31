@@ -3,7 +3,8 @@
 - [ ] Confirm the `source` and `website` values in `app/config.json` point to
       the real public project URLs.
 - [ ] Push a version tag and confirm the release workflow publishes the source
-      archive, checksum and reproducible `amd64`/`arm64` images.
+      archive, checksum and the verified `amd64` image. No `arm64` artifact is
+      published or listed until a real arm64 runtime has been tested.
 - [ ] Make the GHCR agent and bot packages public before sharing the Runtipi
       app definition.
 - [ ] Run Python unit tests, Node tests, JavaScript syntax checks and
