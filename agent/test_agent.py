@@ -92,6 +92,33 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertEqual(host["pretty_name"], "Ubuntu Server 24.04.4 LTS")
         self.assertEqual(host["source"], "maintenance-status")
 
+    def test_host_hostname_uses_docker_engine_name_when_host_bind_is_missing(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            missing = pathlib.Path(directory) / "missing-hostname"
+            with patch.object(self.module, "HOST_HOSTNAME_FILE", missing), \
+                    patch.object(self.module, "docker_json", return_value={"Name": "hades"}):
+                hostname = self.module.host_hostname()
+        self.assertEqual(hostname, "hades")
+
+    def test_network_connectivity_uses_container_resolver_when_host_bind_is_missing(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            resolv = pathlib.Path(directory) / "resolv.conf"
+            resolv.write_text("nameserver 127.0.0.11\n", encoding="utf-8")
+            missing = pathlib.Path(directory) / "missing-resolv.conf"
+            with patch.object(self.module, "HOST_RESOLV_CONF_FILE", missing), \
+                    patch.object(self.module, "CONTAINER_RESOLV_CONF_FILE", resolv), \
+                    patch.object(self.module, "_default_gateway", return_value=""), \
+                    patch.object(self.module, "_dns_query", return_value={"ok": True, "latency_ms": 2, "detail": "DNS query answered"}):
+                result = self.module.network_connectivity()
+        self.assertTrue(result["dns"]["configured"])
+        self.assertEqual(result["dns"]["nameserver_count"], 1)
+        self.assertTrue(result["dns"]["reachable"])
+        self.assertEqual(result["dns"]["latency_ms"], 2)
+
     def test_sanitizes_audit_values(self):
         self.assertEqual(self.module.sanitize_audit_value("Sai\nadmin"), "Sai?admin")
 

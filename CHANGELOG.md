@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0c - 2026-08-31
+
+1. Fixed network-page titles on older Runtipi layouts by using the Docker
+   engine host name instead of a container ID when the host-name bind is
+   missing.
+2. Fixed false “DNS not configured” results by checking Docker’s local
+   resolver when a regenerated Compose file omits the host resolver bind.
+3. Added regression coverage for both compatibility fallbacks without
+   changing the guarded OTA validation or container-only deployment scope.
+
 ## 0.4.0b - 2026-08-31
 
 1. Hardened release and rollback validation, including health-checked

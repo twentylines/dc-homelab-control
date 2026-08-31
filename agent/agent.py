@@ -75,6 +75,7 @@ HOST_MEDIA_PATH = Path(os.getenv("HOST_MEDIA_PATH", "/host/media"))
 HOST_MEDIA_LABEL = os.getenv("HOST_MEDIA_LABEL", "Media").strip() or "Media"
 HOST_GATEWAY = os.getenv("HOST_GATEWAY", "host.docker.internal")
 HOST_RESOLV_CONF_FILE = Path(os.getenv("HOST_RESOLV_CONF_FILE", "/host/etc/resolv.conf"))
+CONTAINER_RESOLV_CONF_FILE = Path("/etc/resolv.conf")
 DATA_DIR = Path(os.getenv("AGENT_DATA_DIR", "/data"))
 SCRUTINY_URL = os.getenv("SCRUTINY_URL", f"http://{HOST_GATEWAY}:8085/api/summary")
 # Keep provider URLs empty unless the operator explicitly supplies one.  When
@@ -99,7 +100,7 @@ RUNTIPI_UPDATE_ALL_TIMEOUT = max(120, min(780, int(os.getenv("RUNTIPI_UPDATE_ALL
 RUNTIPI_PROTECTED_APP_IDS = {"homelab-control", "hades-control", "backend", "runtipi"}
 CONTROL_BOT_NAME = os.getenv("CONTROL_BOT_NAME", "Homelab Control").strip() or "Homelab Control"
 HOMELAB_CONTROL_REPOSITORY = os.getenv("HOMELAB_CONTROL_REPOSITORY", "").strip()
-HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.4.0b").strip() or "0.4.0b"
+HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.4.0c").strip() or "0.4.0c"
 HOMELAB_CONTROL_RELEASE_CHANNEL = os.getenv("HOMELAB_CONTROL_RELEASE_CHANNEL", "stable").strip().lower() or "stable"
 if HOMELAB_CONTROL_RELEASE_CHANNEL not in {"stable", "beta"}:
     HOMELAB_CONTROL_RELEASE_CHANNEL = "stable"
@@ -399,16 +400,22 @@ def network_connectivity():
                 gateway_result["detail"] = "Gateway discovered, but no internal probe answered"
 
     nameservers = []
-    try:
-        lines = HOST_RESOLV_CONF_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        lines = []
-    for line in lines:
-        match = re.match(r"^\s*nameserver\s+(\S+)", line, re.IGNORECASE)
-        if match:
-            server = match.group(1).strip()
-            if server and server not in nameservers and len(nameservers) < 6:
-                nameservers.append(server)
+    # A regenerated Runtipi Compose file can omit the host resolv.conf bind.
+    # Docker still exposes its local resolver inside the container, so use it
+    # as a bounded fallback instead of incorrectly reporting DNS as absent.
+    for resolv_path in (HOST_RESOLV_CONF_FILE, CONTAINER_RESOLV_CONF_FILE):
+        try:
+            lines = resolv_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            match = re.match(r"^\s*nameserver\s+(\S+)", line, re.IGNORECASE)
+            if match:
+                server = match.group(1).strip()
+                if server and server not in nameservers and len(nameservers) < 6:
+                    nameservers.append(server)
+        if nameservers:
+            break
     dns_checks = [_dns_query(server) for server in nameservers]
     dns_ok = next((result for result in dns_checks if result.get("ok")), None)
     dns_result = {
@@ -1650,14 +1657,32 @@ def ram_speeds_mhz():
 
 
 def host_hostname():
-    for path in (HOST_HOSTNAME_FILE, Path("/etc/hostname")):
+    # Prefer the explicit host bind when present. Older Runtipi-generated
+    # definitions may omit it; Docker's read-only /info endpoint still
+    # exposes the engine's host name without leaking an address or secret.
+    for path in (HOST_HOSTNAME_FILE,):
         try:
             value = path.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
             continue
         if value and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}", value):
             return value
-    return platform.node() or "home-server"
+    try:
+        info = docker_json("/info")
+        value = str(info.get("Name") or "").strip() if isinstance(info, dict) else ""
+        if value and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}", value):
+            return value
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        pass
+    # Do not mistake Docker's generated twelve-hex-character container
+    # hostname for the host name when the engine is unavailable.
+    try:
+        value = Path("/etc/hostname").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        value = ""
+    if value and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}", value) and not re.fullmatch(r"[0-9a-f]{12}", value, re.IGNORECASE):
+        return value
+    return "home-server"
 
 
 def _clean_os_value(value, maximum=120):

@@ -15,7 +15,7 @@ homelab without carrying those private names into the code or UI.
 
 ## Tested reference setup
 
-The reference deployment used for the 0.4.0b hotfix checks is Ubuntu
+The reference deployment used for the 0.4.0c hotfix checks is Ubuntu
 Server 24.04 LTS on amd64 with Docker managed by Runtipi, a Jellyfin/Seerr
 media stack (including Sonarr, Radarr, Prowlarr and qBittorrent), Crafty
 Controller for Minecraft, and supporting AdGuard Home, Beszel, Scrutiny,
