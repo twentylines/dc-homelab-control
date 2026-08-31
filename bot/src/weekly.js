@@ -75,7 +75,12 @@ async function postWebhook(payload) {
 }
 
 function safeError(error) {
-  return error?.message ? String(error.message).replace(/[\r\n]/g, ' ').slice(0, 160) : 'not available';
+  if (!error?.message) return 'not available';
+  return String(error.message)
+    .replace(/https:\/\/discord\.com\/api\/webhooks\/\d+\/[^\s/]+/gi, '[redacted webhook]')
+    .replace(/\b(token|password|secret|api[_-]?key)(\s*[=:]\s*)[^\s,;]+/gi, '$1$2[redacted]')
+    .replace(/[\r\n]/g, ' ')
+    .slice(0, 160);
 }
 
 export async function sendWeeklyReport() {

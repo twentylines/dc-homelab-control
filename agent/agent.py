@@ -92,7 +92,7 @@ RUNTIPI_UPDATE_ALL_TIMEOUT = max(120, min(780, int(os.getenv("RUNTIPI_UPDATE_ALL
 RUNTIPI_PROTECTED_APP_IDS = {"homelab-control", "hades-control", "backend", "runtipi"}
 CONTROL_BOT_NAME = os.getenv("CONTROL_BOT_NAME", "Homelab Control").strip() or "Homelab Control"
 HOMELAB_CONTROL_REPOSITORY = os.getenv("HOMELAB_CONTROL_REPOSITORY", "").strip()
-HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.3.20").strip() or "0.3.20"
+HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.3.21").strip() or "0.3.21"
 HOMELAB_CONTROL_RELEASE_CHANNEL = os.getenv("HOMELAB_CONTROL_RELEASE_CHANNEL", "stable").strip().lower() or "stable"
 HOMELAB_CONTROL_RELEASE_ASSET = os.getenv("HOMELAB_CONTROL_RELEASE_ASSET", "").strip()
 BOT_RELEASE_STATUS_FILE = MAINTENANCE_DIR / "bot-release.json"
@@ -598,7 +598,7 @@ def _policy_read():
 
 
 def _policy_write(policy):
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    secure_data_dir()
     temporary = CONTROL_POLICY_FILE.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(policy, separators=(",", ":")), encoding="utf-8")
     os.chmod(temporary, 0o600)
@@ -2212,10 +2212,18 @@ def sanitize_audit_value(value: str | None, maximum=100):
     return re.sub(r"[^a-zA-Z0-9_.:@ -]", "?", value)[:maximum]
 
 
-def append_audit(entry):
+def secure_data_dir():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(DATA_DIR, 0o700)
+
+
+def append_audit(entry):
+    secure_data_dir()
     entry = {"timestamp": datetime.now(timezone.utc).isoformat(), **entry}
-    with (DATA_DIR / "audit.jsonl").open("a", encoding="utf-8") as handle:
+    path = DATA_DIR / "audit.jsonl"
+    descriptor = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+    os.chmod(path, 0o600)
+    with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, separators=(",", ":")) + "\n")
 
 
@@ -2604,6 +2612,13 @@ def _release_archive_asset(payload):
     return {"name": str(asset.get("name") or "")[:180], "url": url[:500], "digest": digest}, None
 
 
+def _release_notes(payload):
+    """Return bounded public release notes without forwarding credentials."""
+    value = redact(str(payload.get("body") or ""))
+    value = "".join(character for character in value if character in "\n\t" or ord(character) >= 32)
+    return value.strip()[:3000]
+
+
 def _safe_bot_release_state():
     raw = _read_json_file(BOT_RELEASE_STATUS_FILE)
     safe = {}
@@ -2685,6 +2700,7 @@ def bot_release_status(force=False):
             "asset_verified": bool(asset and asset.get("digest")),
             "release_url": str(payload.get("html_url") or "")[:500],
             "published_at": str(payload.get("published_at") or "")[:80],
+            "release_notes": _release_notes(payload),
             "asset_name": asset.get("name") if asset else None,
             "asset_url": asset.get("url") if asset else None,
             "asset_digest": asset.get("digest") if asset else None,
@@ -3264,7 +3280,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "HomelabControlAgent/0.1"
 
     def log_message(self, fmt, *args):
-        print(f"{self.address_string()} {fmt % args}")
+        print(fmt % args)
 
     def send_json(self, status: int, payload):
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -3487,7 +3503,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    secure_data_dir()
     server = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler)
     print(f"Homelab Control agent listening on {LISTEN_HOST}:{LISTEN_PORT}")
     server.serve_forever()

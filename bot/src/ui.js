@@ -308,6 +308,25 @@ function safeUpdateText(value, maximum = 180) {
   return String(value || 'Unknown').replace(/[\\`*_~|\r\n@]/g, '').slice(0, maximum);
 }
 
+function safeReleaseNotes(value) {
+  const cleaned = String(value || '')
+    .replace(/\r/g, '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .replace(/@/g, '@\u200b')
+    .replace(/```/g, "'''")
+    .trim();
+  return cleaned ? cleaned.slice(0, 980) : 'No release notes were published for this version.';
+}
+
+export function botUpdateConfirmationEmbed(release) {
+  const version = safeUpdateText(release?.latest || 'selected release', 60);
+  return base(
+    'Confirm Homelab Control update',
+    `Install the verified GitHub release **${version}**?\n\nOnly the control agent and Discord bot images will be rebuilt. Other containers and their data remain online. The previous control images are retained if runtime verification fails.`,
+    'Verified GitHub archive · restart and health verification required',
+  ).setColor(colors.warn).addFields({ name: `What changed in ${version}`, value: safeReleaseNotes(release?.release_notes), inline: false });
+}
+
 function rollbackActionLabel(version) {
   if (!version) return 'Revert version';
   const cleanVersion = safeUpdateText(version, 20).replace(/^v/i, '');
@@ -594,6 +613,16 @@ export function botReleaseLoadingEmbed(action, release, tick = 0) {
     `${glyph} **${safeUpdateText(stage, 180)}${dots}**\nTarget · **${safeUpdateText(target, 60)}**\n⏳ The bot will report completion only after both control containers answer their health checks.`,
     'Guarded release workflow · no other containers are changed',
   ).setColor(colors.idle).addFields({ name: 'Live feed', value: events.slice(0, 1024), inline: false });
+}
+
+export function botReleaseRestartEmbed(action, release) {
+  const target = release?.latest || release?.requested_version || release?.rollback_version || release?.version || 'selected release';
+  const verb = action === 'rollback' ? 'reverting to' : 'updating to';
+  return base(
+    'Homelab Control // restarting',
+    `🟣 **Restarting the control agent and Discord bot…**\nThe controller is ${verb} **${safeUpdateText(target, 60)}**. A short period of silence is expected while it replaces itself.\n\n⏳ This can take several minutes. This message will change to **Update complete** only after the new agent and bot both answer their health checks.`,
+    'Guarded release hand-off · other containers remain online',
+  ).setColor(colors.idle);
 }
 
 export function botReleaseResultEmbed(action, release) {

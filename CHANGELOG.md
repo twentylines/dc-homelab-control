@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.21 - 2026-08-31
+
+1. Added a restart-safe bot update hand-off that keeps the original Discord
+   response alive while the control containers replace themselves.
+2. Added post-restart verification and a verified completion response, with a
+   webhook fallback when Discord's interaction window has expired.
+3. Added the selected GitHub release notes to the administrator confirmation
+   panel with bounded, mention-safe rendering.
+4. Hardened audit storage permissions and removed unnecessary identifiers from
+   routine logs.
+
 ## 0.3.20 - 2026-08-31
 
 1. Added verified GitHub rollback discovery: `/updates` now finds the highest

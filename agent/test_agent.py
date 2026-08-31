@@ -36,6 +36,22 @@ class AgentHelpersTest(unittest.TestCase):
     def test_sanitizes_audit_values(self):
         self.assertEqual(self.module.sanitize_audit_value("Sai\nadmin"), "Sai?admin")
 
+    def test_audit_storage_is_private(self):
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = pathlib.Path(directory) / "agent"
+            data_dir.mkdir(mode=0o777)
+            audit_file = data_dir / "audit.jsonl"
+            audit_file.write_text("", encoding="utf-8")
+            os.chmod(data_dir, 0o777)
+            os.chmod(audit_file, 0o666)
+            with patch.object(self.module, "DATA_DIR", data_dir):
+                self.module.append_audit({"action": "status", "actor_id": "123"})
+            self.assertEqual(data_dir.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(audit_file.stat().st_mode & 0o777, 0o600)
+
     def test_normalises_runtipi_updates_and_protects_control_app(self):
         payload = {
             "installed": [
@@ -470,6 +486,7 @@ class AgentHelpersTest(unittest.TestCase):
                 patch.object(self.module, "_github_release_payload", return_value={
                     "tag_name": "v0.3.18",
                     "prerelease": False,
+                    "body": "## Changes\n- Safer restart hand-off\n- token=do-not-forward",
                     "html_url": "https://github.com/example/homelab-control/releases/tag/v0.3.18",
                     "assets": [{
                         "name": "homelab-control-0.3.18.tar.gz",
@@ -486,6 +503,8 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertEqual(status["latest"], "0.3.18")
         self.assertTrue(status["update_available"])
         self.assertTrue(status["asset_verified"])
+        self.assertIn("Safer restart hand-off", status["release_notes"])
+        self.assertNotIn("do-not-forward", status["release_notes"])
 
     def test_bot_release_status_discovers_verified_previous_github_release(self):
         import tempfile

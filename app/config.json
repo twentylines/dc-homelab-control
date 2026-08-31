@@ -13,7 +13,7 @@
   "no_gui": true,
   "supported_architectures": ["amd64", "arm64"],
   "tipi_version": 1,
-  "version": "0.3.20",
+  "version": "0.3.21",
   "dynamic_config": true,
   "deprecated": false,
   "force_expose": false,

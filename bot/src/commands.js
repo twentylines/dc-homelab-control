@@ -17,9 +17,10 @@ import { wakeDevice } from './wol.js';
 import {
   actionLoadingEmbed, backButton, backRow, base, bytes, colors, errorEmbed, helpEmbed, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, operatingSystemIcon, operatingSystemShortLabel, pingEmbed,
   controlsEmbed, controlsRows, healthEmbed, networkEmbed, panelEmbed, panelRows, reportEmbeds, serviceRows, servicesEmbed, statusEmbed, storageEmbed,
-  botReleaseLoadingEmbed, botReleaseResultEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows,
+  botReleaseLoadingEmbed, botReleaseRestartEmbed, botReleaseResultEmbed, botUpdateConfirmationEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows,
 } from './ui.js';
 import { notifyMaintenanceEvent } from './weekly.js';
+import { clearBotReleaseResume, stageBotReleaseResume } from './release-resume.js';
 
 export const commandData = [
   new SlashCommandBuilder().setName('panel').setDescription('Open the homelab control panel')
@@ -476,11 +477,13 @@ async function runSystemRebootWorkflow(interaction, jobId) {
 async function runBotReleaseWorkflow(interaction, action) {
   let release = { phase: 'queued' };
   let tick = 0;
+  let accepted = null;
   await interaction.update({ embeds: [botReleaseLoadingEmbed(action, release, tick)], components: [] });
   try {
-    const accepted = action === 'rollback'
+    accepted = action === 'rollback'
       ? await agent.rollbackBot(interaction.user)
       : await agent.updateBot(interaction.user);
+    stageBotReleaseResume(interaction, action, accepted);
     release = { ...release, ...accepted, phase: 'queued' };
     await interaction.editReply({ embeds: [botReleaseLoadingEmbed(action, release, tick)], components: [] });
     const deadline = Date.now() + 30 * 60 * 1000;
@@ -494,13 +497,23 @@ async function runBotReleaseWorkflow(interaction, action) {
         release = { ...release, phase: 'failed', detail: 'The host returned a different release job; no completion was claimed' };
         break;
       }
+      if (['restarting', 'verifying_runtime'].includes(String(release.phase || '').toLowerCase())) {
+        await interaction.editReply({ embeds: [botReleaseRestartEmbed(action, release)], components: [] });
+        return;
+      }
       if (['complete', 'rolled_back', 'failed'].includes(String(release.phase || '').toLowerCase())) break;
     }
     if (!['complete', 'rolled_back', 'failed'].includes(String(release.phase || '').toLowerCase())) {
       release = { ...release, phase: 'failed', detail: 'Timed out waiting for the guarded host release bridge' };
     }
     await interaction.editReply({ embeds: [botReleaseResultEmbed(action, release)], components: updateResultRows() });
+    clearBotReleaseResume();
   } catch (error) {
+    if (accepted) {
+      await interaction.editReply({ embeds: [botReleaseRestartEmbed(action, release)], components: [] }).catch(() => {});
+      return;
+    }
+    clearBotReleaseResume();
     await interaction.editReply({ embeds: [errorEmbed(error.message)], components: updateResultRows() });
   }
 }
@@ -701,9 +714,7 @@ export async function handleComponent(interaction) {
       const id = stageConfirmation(interaction.user.id, { type: 'bot-update', version: release.latest });
       await interaction.reply({
         ephemeral: true,
-        embeds: [base('Confirm Homelab Control update', `Install the verified GitHub release **${release.latest}**?
-
-Only the control agent and Discord bot images will be rebuilt. Other containers and their data are left untouched. The previous control images are retained so a version rollback remains available if verification fails.`).setColor(colors.warn)],
+        embeds: [botUpdateConfirmationEmbed(release)],
         components: confirmRows(id),
       });
       return;

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { actionLoadingEmbed, bar, base, botReleaseLoadingEmbed, botReleaseResultEmbed, botReleaseSummary, bytes, controlsEmbed, controlsRows, duration, healthEmbed, helpEmbed, hostUpdateSummary, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, networkEmbed, operatingSystemLabel, operatingSystemShortLabel, panelEmbed, pingEmbed, reportEmbeds, serviceRows, servicesEmbed, statusEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows } from '../src/ui.js';
+import { actionLoadingEmbed, bar, base, botReleaseLoadingEmbed, botReleaseRestartEmbed, botReleaseResultEmbed, botReleaseSummary, botUpdateConfirmationEmbed, bytes, controlsEmbed, controlsRows, duration, healthEmbed, helpEmbed, hostUpdateSummary, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, networkEmbed, operatingSystemLabel, operatingSystemShortLabel, panelEmbed, pingEmbed, reportEmbeds, serviceRows, servicesEmbed, statusEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows } from '../src/ui.js';
 import { minecraftInternals } from '../src/minecraft.js';
 
 const sampleStatus = {
@@ -283,6 +283,15 @@ test('bot release UI reports GitHub checks and exposes guarded update and rollba
   assert.match(loading.description, /Downloading the release archive/);
   assert.match(loading.description, /both control containers answer their health checks/);
   assert.match(loading.fields[0].value, /verified GitHub release archive/);
+  const restarting = botReleaseRestartEmbed('update', { phase: 'restarting', requested_version: '0.3.18' }).toJSON();
+  assert.match(restarting.title, /restarting/i);
+  assert.match(restarting.description, /short period of silence is expected/i);
+  assert.match(restarting.description, /several minutes/i);
+  assert.match(restarting.description, /Update complete/i);
+  const confirmation = botUpdateConfirmationEmbed({ latest: '0.3.18', release_notes: '## Changes\n- Restart completion\n- @everyone stays silent' }).toJSON();
+  assert.match(confirmation.fields[0].value, /Restart completion/);
+  assert.doesNotMatch(confirmation.fields[0].value, /@everyone/);
+  assert.ok(confirmation.fields[0].value.length <= 1024);
   const result = botReleaseResultEmbed('update', { phase: 'complete', current: '0.3.18', previous_version: '0.3.17', detail: 'Release 0.3.18 is running and both control health checks passed', events: [{ message: 'Bot release applied and verified' }] }).toJSON();
   assert.match(result.description, /Bot update verified/);
   assert.match(result.description, /0\.3\.18/);

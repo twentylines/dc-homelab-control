@@ -4,6 +4,7 @@ import { config } from './config.js';
 import { accessLevel, canUseCommand } from './access.js';
 import { commandData, handleAutocomplete, handleCommand, handleComponent, handleModal } from './commands.js';
 import { notifyMaintenanceOnline, startWeeklyReporter } from './weekly.js';
+import { resumeBotReleaseWorkflow } from './release-resume.js';
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
@@ -12,9 +13,9 @@ client.once(Events.ClientReady, async (ready) => {
   for (const guildId of config.guildIds) {
     try {
       await rest.put(Routes.applicationGuildCommands(config.clientId, guildId), { body: commandData });
-      console.log(`Registered ${commandData.length} commands in guild ${guildId}`);
+      console.log(`Registered ${commandData.length} commands in a configured guild`);
     } catch (error) {
-      console.error(`Could not register commands in guild ${guildId}:`, error.message);
+      console.error('Could not register commands in a configured guild:', error.message);
     }
   }
   console.log(`${config.botName} ready as ${ready.user.tag}; access configured for ${config.guildIds.length} guild(s)`);
@@ -22,6 +23,7 @@ client.once(Events.ClientReady, async (ready) => {
   // Give the host bridge a moment to publish its post-boot status before the
   // one-shot online notification check. The state file prevents duplicates.
   setTimeout(() => notifyMaintenanceOnline().catch(() => {}), 12_000).unref?.();
+  setTimeout(() => resumeBotReleaseWorkflow().catch((error) => console.warn('Release completion check failed:', error?.message || error)), 8_000).unref?.();
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
