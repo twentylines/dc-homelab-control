@@ -33,11 +33,13 @@ jobs:
       - name: Run bot tests
         working-directory: bot
         env:
-          CONTROL_TOKEN: 0123456789abcdef0123456789abcdef
-          DISCORD_TOKEN: test-token
-          DISCORD_CLIENT_ID: 123456789012345678
-          DISCORD_GUILD_ID: 123456789012345678
-          DISCORD_OWNER_ID: 123456789012345678
+          CONTROL_TOKEN: '0123456789abcdef0123456789abcdef'
+          DISCORD_TOKEN: 'test-token'
+          # Keep Discord IDs as strings; unquoted numeric-looking YAML values
+          # can be rendered as scientific notation by GitHub Actions.
+          DISCORD_CLIENT_ID: '123456789012345678'
+          DISCORD_GUILD_ID: '123456789012345678'
+          DISCORD_OWNER_ID: '123456789012345678'
         run: npm test
       - name: Validate source syntax and configuration
         shell: bash
