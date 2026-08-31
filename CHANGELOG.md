@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.22 - 2026-08-31
+
+1. Separated host-maintenance and bot-release status feeds so a control
+   container restart cannot masquerade as a host restart or change its OS.
+2. Added explicit host and control-container OS identities; the host label now
+   comes only from the mounted host `/etc/os-release` file.
+3. Added stale-status recovery for installations upgraded from the affected
+   status layout.
+4. Made bot release handling explicitly manual-only: release checks are
+   read-only, and the bridge refuses requests without administrator confirmation.
+
 ## 0.3.21 - 2026-08-31
 
 1. Added a restart-safe bot update hand-off that keeps the original Discord

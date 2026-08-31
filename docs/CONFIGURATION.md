@@ -17,7 +17,7 @@ still be filled from that file.
 | `DISCORD_GUEST_USER_IDS` / `DISCORD_GUEST_ROLE_IDS` | No | Read-only users; `/wake` remains available. |
 | `BOT_NAME` / `SERVER_NAME` / `TIME_ZONE` | No | Branding and timestamps. |
 | `SERVICE_CONTROL_MODE` | No | `opt-out` (default), or `opt-in` for approval-before-controls. |
-| `HOMELAB_CONTROL_REPOSITORY` | No | Public GitHub `owner/repository` used for bot update and rollback checks. |
+| `HOMELAB_CONTROL_REPOSITORY` | No | Public GitHub `owner/repository` used for read-only bot release checks. |
 | `HOMELAB_CONTROL_VERSION` | No | Installed bot release, used for safe version comparison. |
 | `HOMELAB_CONTROL_RELEASE_CHANNEL` | No | `stable` only in this release; pre-releases are ignored. |
 | `HOMELAB_CONTROL_RELEASE_ASSET` | No | Exact archive filename when a release contains more than one archive. |

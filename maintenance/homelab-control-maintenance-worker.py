@@ -277,6 +277,7 @@ def read_bot_status():
 
 def base_bot_status(existing=None):
     status = dict(existing or {})
+    status["kind"] = "bot"
     status.setdefault("schema", 1)
     status.setdefault("phase", "idle")
     status.setdefault("job_id", None)
@@ -504,7 +505,7 @@ def restore_release(status: dict, snapshot: dict):
         append_bot_event(status, "Restoring the previous control images")
         write_bot_status(status)
         command = compose_base_command() + ["-f", str(override), "up", "-d", "--no-deps", "agent", "bot"]
-        if not run_command(status, command, "Switching back to the previous control release"):
+        if not run_bot_command(status, command, "Switching back to the previous control release"):
             return False
         return wait_control_health(status)
     except (OSError, RuntimeError, subprocess.SubprocessError):
@@ -561,14 +562,14 @@ def run_bot_update(request: dict):
             append_bot_event(status, "Validating the Compose merge before building")
             write_bot_status(status)
             config_check = compose_base_command() + ["-f", str(override), "config", "--quiet"]
-            if not run_command(status, config_check, "Checking the release Compose definition"):
+            if not run_bot_command(status, config_check, "Checking the release Compose definition"):
                 raise RuntimeError("The release Compose definition failed validation")
-            if not run_command(status, compose_base_command() + ["-f", str(override), "build", "agent", "bot"], "Building the new control images"):
+            if not run_bot_command(status, compose_base_command() + ["-f", str(override), "build", "agent", "bot"], "Building the new control images"):
                 raise RuntimeError("The control image build failed; the previous release was kept")
             status["phase"] = "restarting"
             append_bot_event(status, "Recreating only the control agent and Discord bot")
             write_bot_status(status)
-            if not run_command(status, compose_base_command() + ["-f", str(override), "up", "-d", "--no-deps", "agent", "bot"], "Starting the new control containers"):
+            if not run_bot_command(status, compose_base_command() + ["-f", str(override), "up", "-d", "--no-deps", "agent", "bot"], "Starting the new control containers"):
                 raise RuntimeError("The control containers could not be started")
             status["phase"] = "verifying_runtime"
             append_bot_event(status, "Waiting for agent and bot health checks")
@@ -648,14 +649,14 @@ def run_bot_rollback(request: dict):
                 status["phase"] = "building"
                 append_bot_event(status, "Validating the rollback Compose merge")
                 write_bot_status(status)
-                if not run_command(status, compose_base_command() + ["-f", str(override), "config", "--quiet"], "Checking the rollback Compose definition"):
+                if not run_bot_command(status, compose_base_command() + ["-f", str(override), "config", "--quiet"], "Checking the rollback Compose definition"):
                     raise RuntimeError("The rollback Compose definition failed validation")
-                if not run_command(status, compose_base_command() + ["-f", str(override), "build", "agent", "bot"], "Building the previous control images"):
+                if not run_bot_command(status, compose_base_command() + ["-f", str(override), "build", "agent", "bot"], "Building the previous control images"):
                     raise RuntimeError("The previous control image build failed")
                 status["phase"] = "restarting"
                 append_bot_event(status, f"Recreating the control containers with release {target_version}")
                 write_bot_status(status)
-                if not run_command(status, compose_base_command() + ["-f", str(override), "up", "-d", "--no-deps", "agent", "bot"], "Starting the previous control release"):
+                if not run_bot_command(status, compose_base_command() + ["-f", str(override), "up", "-d", "--no-deps", "agent", "bot"], "Starting the previous control release"):
                     raise RuntimeError("The previous control containers could not be started")
                 status["phase"] = "verifying_runtime"
                 append_bot_event(status, "Waiting for agent and bot health checks")
@@ -703,6 +704,7 @@ def run_bot_rollback(request: dict):
 
 def base_status(existing=None):
     status = dict(existing or {})
+    status["kind"] = "host"
     status.setdefault("schema", 1)
     status.setdefault("phase", "idle")
     status.setdefault("job_id", None)
@@ -712,9 +714,9 @@ def base_status(existing=None):
     return status
 
 
-def run_command(status: dict, command: list[str], label: str) -> bool:
-    append_event(status, label)
-    save_status(status)
+def run_command(status: dict, command: list[str], label: str, *, append_fn=append_event, save_fn=save_status, operation="package manager") -> bool:
+    append_fn(status, label)
+    save_fn(status)
     try:
         process = subprocess.Popen(
             command,
@@ -728,29 +730,34 @@ def run_command(status: dict, command: list[str], label: str) -> bool:
         for line in process.stdout:
             line = clean_line(line)
             if line:
-                append_event(status, line)
-                save_status(status)
+                append_fn(status, line)
+                save_fn(status)
         return_code = process.wait(timeout=COMMAND_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         process.kill()
-        append_event(status, "The package manager timed out; no reboot was requested")
+        append_fn(status, f"The {operation} timed out; no host reboot was requested")
         status["phase"] = "failed"
-        status["detail"] = f"{host_os()['name']} package operation timed out"
-        save_status(status)
+        status["detail"] = f"{host_os()['name']} {operation} timed out"
+        save_fn(status)
         return False
     except OSError as exc:
-        append_event(status, f"Could not start package manager ({exc.__class__.__name__})")
+        append_fn(status, f"Could not start {operation} ({exc.__class__.__name__})")
         status["phase"] = "failed"
-        status["detail"] = f"{host_os()['name']} package manager could not be started"
-        save_status(status)
+        status["detail"] = f"{host_os()['name']} {operation} could not be started"
+        save_fn(status)
         return False
     if return_code != 0:
-        append_event(status, f"Package manager exited with code {return_code}")
+        append_fn(status, f"The {operation} exited with code {return_code}")
         status["phase"] = "failed"
-        status["detail"] = f"{host_os()['name']} package operation failed (exit {return_code})"
-        save_status(status)
+        status["detail"] = f"{host_os()['name']} {operation} failed (exit {return_code})"
+        save_fn(status)
         return False
     return True
+
+
+def run_bot_command(status: dict, command: list[str], label: str) -> bool:
+    """Run a control-release command without touching host-maintenance state."""
+    return run_command(status, command, label, append_fn=append_bot_event, save_fn=write_bot_status, operation="control release command")
 
 
 def apply_updates(request: dict):
@@ -837,15 +844,54 @@ def startup_transition(status: dict):
     return status
 
 
+BOT_STATUS_FIELDS = {
+    "requested_version",
+    "current_version",
+    "previous_version",
+    "asset_name",
+    "asset_url",
+    "asset_digest",
+    "rollback_source",
+    "rollback_images",
+    "rollback_available",
+}
+
+
+def looks_like_bot_status(status: dict, bot_status: dict | None = None) -> bool:
+    """Recognise a release snapshot left in the host status file by old builds."""
+    if not isinstance(status, dict) or not status:
+        return False
+    if status.get("kind") == "bot":
+        return True
+    if any(field in status for field in BOT_STATUS_FIELDS):
+        return True
+    if status.get("kind") == "host":
+        return False
+    return bool(
+        status.get("job_id")
+        and isinstance(bot_status, dict)
+        and status.get("job_id") == bot_status.get("job_id")
+        and status.get("phase") in {"checking", "downloading", "verifying", "staging", "building", "restarting", "verifying_runtime"}
+    )
+
+
 def main():
     MAINTENANCE_DIR.mkdir(parents=True, exist_ok=True)
-    status = startup_transition(base_status(read_json(STATUS_FILE)))
+    raw_host_status = read_json(STATUS_FILE)
+    raw_bot_status = read_bot_status()
+    # Builds before the status split wrote bot-release progress into the host
+    # snapshot. Do not let that stale record masquerade as the host OS or a
+    # host restart; the separate bot status file remains the source of truth.
+    if looks_like_bot_status(raw_host_status, raw_bot_status):
+        status = base_status()
+    else:
+        status = startup_transition(base_status(raw_host_status))
     try:
         status.update(host_update_snapshot())
     except Exception:
         pass
     save_status(status)
-    bot_status = base_bot_status(read_bot_status())
+    bot_status = base_bot_status(raw_bot_status)
     bot_status["update_supported"] = bot_update_supported()
     if bot_status.get("phase") in {"checking", "downloading", "verifying", "staging", "building", "restarting", "verifying_runtime"}:
         bot_status["phase"] = "failed"
@@ -866,9 +912,23 @@ def main():
             elif action == "reboot":
                 request_reboot(request)
             elif action == "bot_update":
-                run_bot_update(request)
+                if request.get("manual_confirmation") is True:
+                    run_bot_update(request)
+                else:
+                    bot_status = base_bot_status(read_bot_status())
+                    bot_status["phase"] = "failed"
+                    bot_status["detail"] = "Bot release refused because an administrator confirmation marker was missing"
+                    append_bot_event(bot_status, "Automatic bot release request refused")
+                    write_bot_status(bot_status)
             elif action == "bot_rollback":
-                run_bot_rollback(request)
+                if request.get("manual_confirmation") is True:
+                    run_bot_rollback(request)
+                else:
+                    bot_status = base_bot_status(read_bot_status())
+                    bot_status["phase"] = "failed"
+                    bot_status["detail"] = "Bot rollback refused because an administrator confirmation marker was missing"
+                    append_bot_event(bot_status, "Automatic bot rollback request refused")
+                    write_bot_status(bot_status)
             else:
                 status = base_status(read_json(STATUS_FILE))
                 status["phase"] = "failed"

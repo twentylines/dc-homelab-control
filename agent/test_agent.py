@@ -33,6 +33,26 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertNotIn("abc", value)
         self.assertNotIn("secret", value)
 
+    def test_host_and_container_os_are_reported_as_separate_identities(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            host_file = root / "host-os-release"
+            container_file = root / "container-os-release"
+            host_file.write_text('ID=ubuntu\nNAME="Ubuntu"\nPRETTY_NAME="Ubuntu Server 24.04.4 LTS"\nVERSION_ID="24.04"\n', encoding="utf-8")
+            container_file.write_text('ID=alpine\nNAME="Alpine Linux"\nPRETTY_NAME="Alpine Linux v3.24"\nVERSION_ID="3.24"\n', encoding="utf-8")
+            with patch.object(self.module, "HOST_OS_RELEASE_FILE", host_file), \
+                    patch.object(self.module, "CONTAINER_OS_RELEASE_FILE", container_file):
+                host = self.module.host_os()
+                container = self.module.container_os()
+        self.assertEqual(host["id"], "ubuntu")
+        self.assertEqual(host["pretty_name"], "Ubuntu Server 24.04.4 LTS")
+        self.assertEqual(host["source"], "host-os-release")
+        self.assertEqual(container["id"], "alpine")
+        self.assertEqual(container["pretty_name"], "Alpine Linux v3.24")
+        self.assertEqual(container["source"], "container-os-release")
+
     def test_sanitizes_audit_values(self):
         self.assertEqual(self.module.sanitize_audit_value("Sai\nadmin"), "Sai?admin")
 
@@ -631,6 +651,32 @@ class AgentHelpersTest(unittest.TestCase):
                 self.assertEqual(snapshot["phase"], "idle")
                 self.assertEqual(snapshot["packages"][0]["name"], "openssl")
                 self.assertTrue(snapshot["maintenance_available"])
+
+    def test_system_updates_uses_live_host_os_and_exposes_container_os(self):
+        import tempfile
+
+        host = {"id": "ubuntu", "name": "Ubuntu", "pretty_name": "Ubuntu Server 24.04.4 LTS", "version_id": "24.04", "source": "test"}
+        container = {"id": "alpine", "name": "Alpine Linux", "pretty_name": "Alpine Linux v3.24", "version_id": "3.24", "source": "test"}
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            maintenance_dir = root / "maintenance"
+            maintenance_dir.mkdir()
+            (maintenance_dir / "status.json").write_text(json.dumps({
+                "kind": "bot",
+                "phase": "restarting",
+                "os": {"id": "alpine", "name": "Alpine Linux", "pretty_name": "Alpine Linux v3.24"},
+                "current_version": "0.3.21",
+            }), encoding="utf-8")
+            with patch.object(self.module, "HOST_UPDATE_NOTIFIER_DIR", root / "missing"), \
+                    patch.object(self.module, "MAINTENANCE_DIR", maintenance_dir), \
+                    patch.object(self.module, "SYSTEM_STATUS_FILE", maintenance_dir / "status.json"), \
+                    patch.object(self.module, "host_os", return_value=host), \
+                    patch.object(self.module, "container_os", return_value=container):
+                snapshot = self.module.system_updates()
+        self.assertEqual(snapshot["os"]["id"], "ubuntu")
+        self.assertEqual(snapshot["os"]["pretty_name"], "Ubuntu Server 24.04.4 LTS")
+        self.assertEqual(snapshot["container_os"]["id"], "alpine")
+        self.assertEqual(snapshot["phase"], "idle")
 
     def test_system_update_request_is_allowlisted_and_atomic(self):
         import tempfile

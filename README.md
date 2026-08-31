@@ -19,7 +19,8 @@ Paperless-ngx, Syncthing and Uptime Kuma containers. The offline test suite
 also covers arm64-safe metadata, Docker-only discovery and API-shaped
 Pterodactyl/Pelican fixtures. Other dashboards and providers are detected only
 where their documented read-only path responds; they are not claimed as
-equally tested.
+equally tested. The control agent and bot are separate Alpine-based containers;
+the UI reports that container identity separately from the Ubuntu host.
 
 ## What is included
 
@@ -43,8 +44,8 @@ equally tested.
 - Guarded Runtipi and supported apt-family host maintenance workflows when the
   separately reviewed host bridge is installed; the host OS is detected rather
   than assumed to be Ubuntu.
-- GitHub release checks for the bot itself, with checksum-gated update and
-  rollback controls through the root-owned host bridge.
+- GitHub release checks for the bot itself. Checks are read-only; an
+  administrator must explicitly confirm any checksum-gated update or rollback.
 - Wake-on-LAN for arbitrary trusted devices with saved favourites.
 - Administrator and guest whitelists. Service controls are opt-out by default:
   detected containers are visible and controllable after administrator
@@ -117,7 +118,7 @@ is the complete path from a fresh homelab to a tested public release:
 7. **Publish only what was tested.** Run the offline Python and Node test
    suites, review the support matrix, inspect the staged file list and perform
    a secret scan. Commit to the intended repository, create a version tag such
-   as `v0.3.21`, and let `.github/workflows/release.yml` create the source
+   as `v0.3.22`, and let `.github/workflows/release.yml` create the source
    archive, `SHA256SUMS`, GitHub release and versioned `amd64`/`arm64` GHCR
    images. Make the GHCR packages public before another host installs the
    Runtipi definition. Do not advertise an untested dashboard as supported.
@@ -181,9 +182,11 @@ before submitting it to a community or own Runtipi store.
 ## Bot releases and rollback
 
 Set `HOMELAB_CONTROL_REPOSITORY=owner/repository` to show the latest stable
-GitHub release in `/updates`. The release must contain exactly one `.tar.gz` or
-`.tgz` source archive with a GitHub SHA-256 digest. The update button remains
-disabled when that digest is absent or when the host bridge is not configured.
+GitHub release in `/updates`. This check is read-only: a release never installs
+by itself, on a schedule, or merely because the bot restarts. The release must
+contain exactly one `.tar.gz` or `.tgz` source archive with a GitHub SHA-256
+digest. The update button remains disabled when that digest is absent or when
+the host bridge is not configured.
 
 Install the root-owned bridge separately because it is the only component that
 needs Docker/Compose privileges:
@@ -201,7 +204,8 @@ while a previous verified image pair is retained. If the pair has been pruned,
 the button falls back to the highest earlier stable release listed by GitHub;
 the agent passes the exact tag, archive URL and digest to the bridge, which
 validates them again before downloading and building. No update or rollback is
-automatic: an administrator must confirm it.
+automatic: an administrator must confirm it. Release requests carry a manual
+confirmation marker; requests without it are refused by the bridge.
 
 The worker rejects non-GitHub URLs, path traversal, symlinks, unexpected
 archive contents, checksum mismatches and releases from a different configured

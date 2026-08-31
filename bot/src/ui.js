@@ -27,6 +27,21 @@ function osInfo(data = {}) {
   return value && typeof value === 'object' ? value : {};
 }
 
+function containerOsInfo(data = {}) {
+  const value = data?.container_os || data?.containerOs || data?.docker_os;
+  return value && typeof value === 'object' ? value : {};
+}
+
+function knownOs(data = {}) {
+  const value = osInfo(data);
+  return Boolean(value.id && String(value.id).toLowerCase() !== 'unknown');
+}
+
+function knownContainerOs(data = {}) {
+  const value = containerOsInfo(data);
+  return Boolean(value.id && String(value.id).toLowerCase() !== 'unknown');
+}
+
 export function operatingSystemLabel(data = {}, fallback = 'Host OS') {
   const os = osInfo(data);
   return cleanBrand(os.pretty_name || os.name || os.id, fallback);
@@ -261,7 +276,8 @@ export function statusEmbed(data) {
       { name: 'CPU', value: meter('Utilisation', data.cpu_percent, cpuDetail(data)), inline: true },
       { name: 'Memory', value: meter('Used', memoryPct, `${bytes(data.memory.used)} / ${bytes(data.memory.total)}`), inline: true },
       { name: 'Uptime', value: duration(data.uptime_seconds), inline: true },
-      { name: `${operatingSystemIcon(data)} Operating system`, value: operatingSystemLabel(data), inline: false },
+      { name: `${operatingSystemIcon(data)} Host operating system`, value: operatingSystemLabel(data, 'Host OS unavailable'), inline: false },
+      ...(knownContainerOs(data) ? [{ name: '📦 Control container', value: operatingSystemLabel({ os: containerOsInfo(data) }, 'Container OS unavailable'), inline: false }] : []),
       { name: 'Containers', value: `**${data.containers.running}/${data.containers.total}** running${data.containers.unhealthy.length ? `\nUnhealthy: ${data.containers.unhealthy.join(', ')}` : ''}`, inline: false },
     );
 }
@@ -278,8 +294,9 @@ export function panelEmbed(data, services, media, updates = null, mediaSummary =
     .addFields(
       { name: 'Live now', value: `${meter('CPU', data.cpu_percent, cpuDetail(data))}\n\n${meter('Memory', memory, `${bytes(data.memory.used)} / ${bytes(data.memory.total)}`)}\n\n**Uptime** ${duration(data.uptime_seconds)}`, inline: true },
       { name: 'Fleet signal', value: `**Docker** ${data.containers.running}/${data.containers.total}\n**Tracked** ${trackedRunning}/${data.containers.tracked_total}${media.length ? `\n**Media** ${onlineMedia}/${media.length} reachable${mediaSummary?.assessed === true ? `\n${mediaSummary.complete ? '🟢 Complete' : '🟡 Incomplete'}` : ''}` : ''}`, inline: true },
-      { name: 'Software', value: `**Runtipi** ${updateState}\nUse \`/updates\` for guarded one-at-a-time or update-all actions.`, inline: true },
-      { name: `${operatingSystemIcon(data)} Operating system`, value: operatingSystemLabel(data), inline: true },
+      { name: 'Software', value: `**Runtipi** ${updateState}\nUse \`/updates\` for manual, administrator-confirmed actions. GitHub release checks never install the bot automatically.`, inline: true },
+      { name: `${operatingSystemIcon(data)} Host operating system`, value: operatingSystemLabel(data, 'Host OS unavailable'), inline: true },
+      ...(knownContainerOs(data) ? [{ name: '📦 Control container', value: operatingSystemLabel({ os: containerOsInfo(data) }, 'Container OS unavailable'), inline: true }] : []),
       { name: 'Capacity', value: diskSummary(data), inline: false },
       { name: 'Control shortcuts', value: '`/health` diagnostic\n`/report` detailed report\n`/tasks` Docker RAM/CPU breakdown\n`/services` service controls\n`/minecraft` Minecraft controls\n`/storage` capacity + SMART\n`/wake mac:...` Wake-on-LAN', inline: true },
       { name: 'Next best action', value: result.issues[0] ? `⚠️ ${result.issues[0]}` : result.recommendations[0] ? `💡 ${result.recommendations[0]}` : '✅ No action needed right now.', inline: true },
@@ -323,7 +340,7 @@ export function botUpdateConfirmationEmbed(release) {
   return base(
     'Confirm Homelab Control update',
     `Install the verified GitHub release **${version}**?\n\nOnly the control agent and Discord bot images will be rebuilt. Other containers and their data remain online. The previous control images are retained if runtime verification fails.`,
-    'Verified GitHub archive · restart and health verification required',
+    'Manual administrator confirmation · no automatic bot updates',
   ).setColor(colors.warn).addFields({ name: `What changed in ${version}`, value: safeReleaseNotes(release?.release_notes), inline: false });
 }
 
@@ -372,6 +389,7 @@ export function botReleaseSummary(release) {
     : release.update_available
       ? [`🟡 **Update available**`, `Current · **${current}**`, `Latest · **${latest}**`]
       : [`🟢 **Up to date**`, `Version · **${current}**`];
+  lines.push('🧑‍💻 **Manual update only** · GitHub checks are read-only until an administrator confirms an action');
   if (release.update_available && !release.asset_verified) lines.push('🔒 Update held · the release archive has no verified SHA-256 digest');
   else if (release.update_available && !release.update_supported) lines.push('🔒 Update held · the guarded host release bridge is not configured');
   else if (release.update_available && !active) lines.push('✅ Verified archive ready to install');
@@ -387,11 +405,8 @@ export function botReleaseSummary(release) {
 }
 
 export function hostUpdateSummary(snapshot) {
-  const hasOs = Object.keys(osInfo(snapshot)).length > 0;
-  // Older bridge snapshots predate the OS field and are known to be Ubuntu
-  // snapshots. New snapshots always carry an explicit identity.
-  const osLabel = operatingSystemLabel(snapshot, hasOs ? 'Host operating system' : 'Ubuntu');
-  const osShort = operatingSystemShortLabel(snapshot, hasOs ? 'Host' : 'Ubuntu');
+  const osLabel = operatingSystemLabel(snapshot, 'Host OS unavailable');
+  const osShort = operatingSystemShortLabel(snapshot, 'Host');
   if (!snapshot || snapshot.available === false) {
     return `⚪ **${osLabel}** update check unavailable\n${safeUpdateText(snapshot?.detail || 'The host did not return update status.', 260)}`;
   }
@@ -405,14 +420,19 @@ export function hostUpdateSummary(snapshot) {
     : `${Number(inferredSecurity).toLocaleString('en-GB')} update${Number(inferredSecurity) === 1 ? '' : 's'}`;
   const phase = safeUpdateText(String(snapshot.phase || 'idle').replace(/_/g, ' '), 40);
   const phaseLabel = phase.replace(/\b\w/g, (letter) => letter.toUpperCase());
-  const isUbuntu = !hasOs || String(osInfo(snapshot).id || '').toLowerCase() === 'ubuntu' || /ubuntu/i.test(osLabel);
+  const isUbuntu = String(osInfo(snapshot).id || '').toLowerCase() === 'ubuntu' || /ubuntu/i.test(osLabel);
   const esmNotice = isUbuntu && /expanded security maintenance for applications|esm apps/i.test(String(snapshot.notice || ''));
   const statusIcon = ['checking', 'applying', 'rebooting'].includes(snapshot.phase) ? '🟣' : snapshot.phase === 'failed' ? '🔴' : snapshot.pending_count > 0 ? '🟡' : '🟢';
   const lines = [
+    `🖥️ **Host OS** · ${safeUpdateText(osLabel, 120)}`,
     `${statusIcon} **${pending} pending**`,
     `**Security** · ${security}`,
     `**Phase** · ${phaseLabel}${snapshot.reboot_required ? ' · **restart required**' : ''}`,
   ];
+  if (knownContainerOs(snapshot)) {
+    const containerLabel = operatingSystemLabel({ os: containerOsInfo(snapshot) }, 'Container OS unavailable');
+    lines.push(`📦 **Control container** · ${safeUpdateText(containerLabel, 120)}`);
+  }
   if (isUbuntu && (snapshot.esm_enabled === false || esmNotice)) {
     lines.push('ℹ️ **Ubuntu Pro / ESM Apps** · optional · not enabled');
   } else if (isUbuntu && snapshot.esm_enabled === true) {
@@ -438,8 +458,8 @@ export function hostUpdateSummary(snapshot) {
 }
 
 function hostUpdateFieldName(snapshot, suffix = 'host') {
-  const hasOs = Object.keys(osInfo(snapshot)).length > 0;
-  return `${hasOs ? operatingSystemIcon(snapshot) : '🐧'} ${operatingSystemLabel(snapshot, hasOs ? 'Host' : 'Ubuntu')} ${suffix}`.slice(0, 256);
+  const label = knownOs(snapshot) ? operatingSystemShortLabel(snapshot, 'Host') : 'Host';
+  return `${knownOs(snapshot) ? operatingSystemIcon(snapshot) : '🖥️'} ${label} ${suffix}`.slice(0, 256);
 }
 
 export function updatesEmbed(snapshot, systemUpdates = null) {
@@ -611,7 +631,7 @@ export function botReleaseLoadingEmbed(action, release, tick = 0) {
   return base(
     `Homelab Control // ${actionLabel}`,
     `${glyph} **${safeUpdateText(stage, 180)}${dots}**\nTarget · **${safeUpdateText(target, 60)}**\n⏳ The bot will report completion only after both control containers answer their health checks.`,
-    'Guarded release workflow · no other containers are changed',
+    'Manual release workflow · no other containers are changed',
   ).setColor(colors.idle).addFields({ name: 'Live feed', value: events.slice(0, 1024), inline: false });
 }
 
@@ -621,7 +641,7 @@ export function botReleaseRestartEmbed(action, release) {
   return base(
     'Homelab Control // restarting',
     `🟣 **Restarting the control agent and Discord bot…**\nThe controller is ${verb} **${safeUpdateText(target, 60)}**. A short period of silence is expected while it replaces itself.\n\n⏳ This can take several minutes. This message will change to **Update complete** only after the new agent and bot both answer their health checks.`,
-    'Guarded release hand-off · other containers remain online',
+    'Manual release hand-off · other containers remain online',
   ).setColor(colors.idle);
 }
 
@@ -643,7 +663,7 @@ export function botReleaseResultEmbed(action, release) {
   return base(
     `Homelab Control // ${action === 'rollback' ? 'rollback result' : 'update result'}`,
     lines.join('\n'),
-    'Guarded release workflow · control containers verified',
+    'Manual release workflow · control containers verified',
   ).setColor(complete ? colors.ok : colors.bad).addFields({ name: 'Recent activity', value: events.slice(0, 1024), inline: false });
 }
 
@@ -773,7 +793,7 @@ export function reportEmbeds(data, services, media, audit, systemUpdates = null,
     .addFields(
       { name: '⚙️ System telemetry', value: `${meter('CPU', data.cpu_percent, cpuDetail(data, true))}\n\n${meter('Memory', memory, `${bytes(data.memory.used)} / ${bytes(data.memory.total)}`)}`, inline: true },
       { name: '⏱️ Runtime', value: `**Docker** ${data.containers.running}/${data.containers.total} running\n**Tracked** ${data.containers.tracked_running}/${data.containers.tracked_total} running\n**Swap** ${swap}\n**Uptime** ${duration(data.uptime_seconds)}\n**Captured** <t:${Math.floor(new Date(data.timestamp).getTime() / 1000)}:R>`, inline: true },
-      { name: '🧾 Host specifications', value: `**OS** ${operatingSystemLabel(data)}\n**CPU** ${data.specs?.cpu_model || 'Unknown'}\n**Frequency** ${frequency(data)}\n**Cores** ${data.specs?.logical_cores || '—'} logical • **Architecture** ${data.specs?.architecture || '—'}\n**RAM** ${bytes(data.memory.total)} • **Speed** ${memorySpeed(data)}\n**Kernel** ${data.specs?.kernel || 'Unknown'}\n**Node** ${data.hostname}`, inline: false },
+      { name: '🧾 Host specifications', value: `**OS** ${operatingSystemLabel(data, 'Host OS unavailable')}\n${knownContainerOs(data) ? `**Control container** ${operatingSystemLabel({ os: containerOsInfo(data) }, 'Container OS unavailable')}\n` : ''}**CPU** ${data.specs?.cpu_model || 'Unknown'}\n**Frequency** ${frequency(data)}\n**Cores** ${data.specs?.logical_cores || '—'} logical • **Architecture** ${data.specs?.architecture || '—'}\n**RAM** ${bytes(data.memory.total)} • **Speed** ${memorySpeed(data)}\n**Kernel** ${data.specs?.kernel || 'Unknown'}\n**Node** ${data.hostname}`, inline: false },
       { name: '💾 Storage', value: diskSummary(data), inline: false },
       { name: '🩺 SMART / drive health', value: driveSummary(data), inline: false },
       ...(systemUpdates ? [{ name: hostUpdateFieldName(systemUpdates, 'update status'), value: hostUpdateSummary(systemUpdates), inline: false }] : []),

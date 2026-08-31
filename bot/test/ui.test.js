@@ -5,6 +5,8 @@ import { minecraftInternals } from '../src/minecraft.js';
 
 const sampleStatus = {
   hostname: 'atlas', timestamp: new Date().toISOString(), cpu_percent: 12.5, load: [0.1, 0.2, 0.3],
+  os: { id: 'ubuntu', name: 'Ubuntu', pretty_name: 'Ubuntu Server 24.04.4 LTS' },
+  container_os: { id: 'alpine', name: 'Alpine Linux', pretty_name: 'Alpine Linux v3.24' },
   temperature_c: 51, uptime_seconds: 86400, memory: { used: 4e9, total: 32e9, swap_used: 0, swap_total: 8e9 },
   storage: [{ label: 'System SSD', used: 50e9, total: 465e9, free: 415e9, percent: 11 }, { label: 'Media HDD', used: 639e9, total: 1833e9, free: 1194e9, percent: 35 }],
   drives: [{ model: 'INTEL SSD', state: 'Healthy', temperature_c: 33, warning: false, critical: false }],
@@ -29,6 +31,22 @@ test('uses the detected operating system and provides distinct help and ping vie
   const ping = pingEmbed({ processingMs: 12, websocketMs: 34 }).toJSON();
   assert.match(ping.description, /12 ms/);
   assert.match(ping.description, /34 ms/);
+});
+
+test('shows host and control-container operating systems separately', () => {
+  const status = statusEmbed(sampleStatus).toJSON();
+  assert.equal(status.fields.find((field) => field.name.includes('Host operating system')).value, 'Ubuntu Server 24.04.4 LTS');
+  assert.equal(status.fields.find((field) => field.name === '📦 Control container').value, 'Alpine Linux v3.24');
+  const update = hostUpdateSummary({
+    available: true,
+    os: sampleStatus.os,
+    container_os: sampleStatus.container_os,
+    pending_count: 0,
+    security_count: 0,
+    phase: 'idle',
+  });
+  assert.match(update, /Host OS.*Ubuntu Server 24\.04\.4 LTS/);
+  assert.match(update, /Control container.*Alpine Linux v3\.24/);
 });
 
 test('shared footer keeps operational notes compact and consistent', () => {
@@ -268,6 +286,7 @@ test('bot release UI reports GitHub checks and exposes guarded update and rollba
   assert.match(releaseField.value, /0\.3\.18/);
   assert.match(botReleaseSummary(snapshot.bot), /Verified archive ready to install/);
   assert.match(botReleaseSummary(snapshot.bot), /from GitHub/);
+  assert.match(botReleaseSummary(snapshot.bot), /Manual update only/);
   assert.match(botReleaseSummary({ ...snapshot.bot, available: false, detail: 'GitHub latest unavailable' }), /Revert available/);
   const rows = updatesRows(snapshot, true);
   assert.ok(rows.length <= 5);
@@ -304,6 +323,7 @@ test('bot release UI reports GitHub checks and exposes guarded update and rollba
 test('Ubuntu maintenance UI reports pending security work and guarded actions', () => {
   const system = {
     available: true,
+    os: { id: 'ubuntu', name: 'Ubuntu', pretty_name: 'Ubuntu Server 24.04.4 LTS' },
     pending_count: 10,
     security_count: 3,
     esm_enabled: false,
@@ -330,6 +350,7 @@ test('Ubuntu maintenance UI reports pending security work and guarded actions', 
 test('Ubuntu update summary explains security classification and phasing', () => {
   const summary = hostUpdateSummary({
     available: true,
+    os: { id: 'ubuntu', name: 'Ubuntu', pretty_name: 'Ubuntu Server 24.04.4 LTS' },
     pending_count: 2,
     security_count: 1,
     esm_enabled: false,

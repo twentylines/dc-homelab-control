@@ -68,6 +68,7 @@ HOST_HWMON = Path(os.getenv("HOST_HWMON", "/host/sys/class/hwmon"))
 HOST_DMI = Path(os.getenv("HOST_DMI", "/host/sys/firmware/dmi/tables"))
 HOST_HOSTNAME_FILE = Path(os.getenv("HOST_HOSTNAME_FILE", "/host/etc/hostname"))
 HOST_OS_RELEASE_FILE = Path(os.getenv("HOST_OS_RELEASE_FILE", "/host/etc/os-release"))
+CONTAINER_OS_RELEASE_FILE = Path(os.getenv("CONTAINER_OS_RELEASE_FILE", "/etc/os-release"))
 HOST_SSD_PATH = Path(os.getenv("HOST_SSD_PATH", "/host/app-data"))
 HOST_SSD_LABEL = os.getenv("HOST_SSD_LABEL", "Application data").strip() or "Application data"
 HOST_MEDIA_PATH = Path(os.getenv("HOST_MEDIA_PATH", "/host/media"))
@@ -92,7 +93,7 @@ RUNTIPI_UPDATE_ALL_TIMEOUT = max(120, min(780, int(os.getenv("RUNTIPI_UPDATE_ALL
 RUNTIPI_PROTECTED_APP_IDS = {"homelab-control", "hades-control", "backend", "runtipi"}
 CONTROL_BOT_NAME = os.getenv("CONTROL_BOT_NAME", "Homelab Control").strip() or "Homelab Control"
 HOMELAB_CONTROL_REPOSITORY = os.getenv("HOMELAB_CONTROL_REPOSITORY", "").strip()
-HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.3.21").strip() or "0.3.21"
+HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.3.22").strip() or "0.3.22"
 HOMELAB_CONTROL_RELEASE_CHANNEL = os.getenv("HOMELAB_CONTROL_RELEASE_CHANNEL", "stable").strip().lower() or "stable"
 HOMELAB_CONTROL_RELEASE_ASSET = os.getenv("HOMELAB_CONTROL_RELEASE_ASSET", "").strip()
 BOT_RELEASE_STATUS_FILE = MAINTENANCE_DIR / "bot-release.json"
@@ -1488,33 +1489,59 @@ def _clean_os_value(value, maximum=120):
     return value[:maximum]
 
 
-def host_os():
-    """Return a bounded host OS identity from the read-only os-release file."""
-    for path in (HOST_OS_RELEASE_FILE, Path("/etc/os-release")):
-        try:
-            raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            continue
-        values = {}
-        for line in raw:
-            if "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            if key in {"ID", "NAME", "PRETTY_NAME", "VERSION_ID"}:
-                values[key] = _clean_os_value(value)
-        identifier = re.sub(r"[^a-z0-9._+-]", "", values.get("ID", "").lower())
-        name = values.get("NAME") or identifier.title() or platform.system() or "Unknown OS"
-        pretty = values.get("PRETTY_NAME") or name
+def _os_identity(path: Path, source: str, unavailable_name: str):
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
         return {
-            "id": identifier or "unknown",
-            "name": name[:80],
-            "pretty_name": pretty[:120],
-            "version_id": values.get("VERSION_ID", "")[:40],
-            "source": "os-release",
+            "id": "unknown",
+            "name": unavailable_name,
+            "pretty_name": unavailable_name,
+            "version_id": "",
+            "source": "unavailable",
         }
-    system = _clean_os_value(platform.system() or "Unknown OS", 80)
+    values = {}
+    for line in raw:
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key in {"ID", "NAME", "PRETTY_NAME", "VERSION_ID"}:
+            values[key] = _clean_os_value(value)
+    identifier = re.sub(r"[^a-z0-9._+-]", "", values.get("ID", "").lower())
+    name = values.get("NAME") or identifier.title() or unavailable_name
+    pretty = values.get("PRETTY_NAME") or name
+    return {
+        "id": identifier or "unknown",
+        "name": name[:80],
+        "pretty_name": pretty[:120],
+        "version_id": values.get("VERSION_ID", "")[:40],
+        "source": source,
+    }
+
+
+def host_os():
+    """Return the host identity from the explicitly mounted host file.
+
+    Never fall back to the agent image's `/etc/os-release`: that describes the
+    container (often Alpine), not the machine running Docker.
+    """
+    return _os_identity(HOST_OS_RELEASE_FILE, "host-os-release", "Host OS unavailable")
+
+
+def container_os():
+    """Return the OS used by the control agent container image."""
+    identity = _os_identity(CONTAINER_OS_RELEASE_FILE, "container-os-release", "Control container OS unavailable")
+    if identity["id"] != "unknown":
+        return identity
+    system = _clean_os_value(platform.system() or "Unknown", 80)
     identifier = re.sub(r"[^a-z0-9._+-]", "", system.lower()) or "unknown"
-    return {"id": identifier, "name": system, "pretty_name": system, "version_id": "", "source": "runtime"}
+    return {
+        "id": identifier,
+        "name": system,
+        "pretty_name": system,
+        "version_id": "",
+        "source": "runtime",
+    }
 
 
 def host_storage():
@@ -1545,6 +1572,7 @@ def system_status():
     return {
         "hostname": host_hostname(),
         "os": host_os(),
+        "container_os": container_os(),
         "specs": host_specs(),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "uptime_seconds": int(float((HOST_PROC / "uptime").read_text().split()[0])),
@@ -3028,6 +3056,10 @@ def _safe_maintenance_status():
     """Return only the bounded, sanitised fields written by the root bridge."""
     raw = _read_json_file(SYSTEM_STATUS_FILE)
     safe = {}
+    release_fields = {"requested_version", "current_version", "previous_version", "asset_name", "asset_url", "asset_digest", "rollback_images"}
+    status_kind = "bot" if any(field in raw for field in release_fields) else raw.get("kind") if raw.get("kind") in {"host", "bot"} else None
+    if status_kind:
+        safe["kind"] = status_kind
     for key in ("phase", "job_id", "started_at", "completed_at", "updated_at", "checked_at", "online_at", "reboot_requested_at", "boot_id", "detail"):
         value = raw.get(key)
         if value is None:
@@ -3070,6 +3102,15 @@ def _safe_maintenance_status():
             "version_id": re.sub(r"[^a-zA-Z0-9._+-]", "", str(os_value.get("version_id") or ""))[:40],
             "source": str(os_value.get("source") or "bridge")[:30],
         }
+    if isinstance(raw.get("container_os"), dict):
+        os_value = raw["container_os"]
+        safe["container_os"] = {
+            "id": re.sub(r"[^a-z0-9._+-]", "", str(os_value.get("id") or "unknown").lower())[:40] or "unknown",
+            "name": re.sub(r"[\r\n]+", " ", str(os_value.get("name") or "Unknown OS"))[:80],
+            "pretty_name": re.sub(r"[\r\n]+", " ", str(os_value.get("pretty_name") or os_value.get("name") or "Unknown OS"))[:120],
+            "version_id": re.sub(r"[^a-zA-Z0-9._+-]", "", str(os_value.get("version_id") or ""))[:40],
+            "source": str(os_value.get("source") or "agent")[:30],
+        }
     for key in ("update_supported", "package_manager"):
         if key in raw:
             safe[key] = bool(raw[key]) if key == "update_supported" else re.sub(r"[^a-zA-Z0-9._+-]", "", str(raw[key]))[:40]
@@ -3085,6 +3126,11 @@ def system_updates():
     os_info = host_os()
     notifier = _update_notifier_snapshot()
     status = _safe_maintenance_status()
+    # A pre-split bridge may have left bot-release progress in status.json.
+    # Ignore that record for host maintenance; it must never make the host
+    # appear to be restarting or change the host OS label.
+    if status.get("kind") == "bot":
+        status = {}
     packages = status.get("packages") or []
     pending = status.get("pending_count")
     if packages:
@@ -3096,7 +3142,10 @@ def system_updates():
             pending = None
     result = {
         "available": bool(status.get("available", notifier.get("available", False))),
-        "os": status.get("os") or notifier.get("os") or os_info,
+        # The live mounted file is authoritative. A stale bridge snapshot must
+        # not replace an Ubuntu host with the Alpine image's identity.
+        "os": os_info,
+        "container_os": container_os(),
         "update_supported": bool(status.get("update_supported", notifier.get("update_supported", os_info["id"] in HOST_UPDATE_SUPPORTED_OS_IDS))),
         "checked_at": status.get("checked_at") or datetime.now(timezone.utc).isoformat(),
         "pending_count": pending if pending is not None else notifier.get("pending_count"),
@@ -3205,6 +3254,7 @@ def _queue_bot_release_request(action: str, actor_id: str, actor_name: str):
         request = {
             "schema": 1,
             "action": action,
+            "manual_confirmation": True,
             "job_id": uuid.uuid4().hex[:24],
             "repository": snapshot.get("repository"),
             "tag": snapshot.get("tag"),
@@ -3224,6 +3274,7 @@ def _queue_bot_release_request(action: str, actor_id: str, actor_name: str):
         request = {
             "schema": 1,
             "action": action,
+            "manual_confirmation": True,
             "job_id": uuid.uuid4().hex[:24],
             "actor_id": sanitize_audit_value(actor_id),
             "actor_name": sanitize_audit_value(actor_name),

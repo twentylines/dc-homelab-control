@@ -61,7 +61,7 @@ class MaintenanceWorkerTest(unittest.TestCase):
                     patch.object(self.module, "bot_update_supported", return_value=True), \
                     patch.object(self.module, "stage_verified_release", return_value=(root / "releases" / "0.3.18", "0.3.18")) as stage, \
                     patch.object(self.module, "compose_override"), \
-                    patch.object(self.module, "run_command", return_value=True), \
+                    patch.object(self.module, "run_bot_command", return_value=True), \
                     patch.object(self.module, "wait_control_health", return_value=True), \
                     patch.object(self.module, "append_bot_event"), \
                     patch.object(self.module, "write_bot_status", side_effect=lambda status: writes.append(dict(status))):
@@ -73,6 +73,34 @@ class MaintenanceWorkerTest(unittest.TestCase):
         self.assertEqual(final["rollback_source"], "github")
         self.assertTrue(final["rollback_available"])
         self.assertEqual(stage.call_args.args[1], request)
+
+    def test_bot_release_commands_keep_progress_out_of_host_status(self):
+        class Process:
+            stdout = []
+
+            def wait(self, timeout=None):
+                return 0
+
+        status = {"kind": "bot", "phase": "building", "events": []}
+        host_events = []
+        host_writes = []
+        bot_events = []
+        bot_writes = []
+        with patch.object(self.module.subprocess, "Popen", return_value=Process()), \
+                patch.object(self.module, "append_event", side_effect=lambda value, message: host_events.append(message)), \
+                patch.object(self.module, "save_status", side_effect=lambda value: host_writes.append(dict(value))), \
+                patch.object(self.module, "append_bot_event", side_effect=lambda value, message: bot_events.append(message)), \
+                patch.object(self.module, "write_bot_status", side_effect=lambda value: bot_writes.append(dict(value))):
+            self.assertTrue(self.module.run_bot_command(status, ["docker", "compose", "build"], "Building control images"))
+        self.assertEqual(host_events, [])
+        self.assertEqual(host_writes, [])
+        self.assertEqual(bot_events, ["Building control images"])
+        self.assertEqual(len(bot_writes), 1)
+
+    def test_legacy_bot_snapshot_is_not_treated_as_host_status(self):
+        self.assertTrue(self.module.looks_like_bot_status({"current_version": "0.3.21"}))
+        self.assertTrue(self.module.looks_like_bot_status({"kind": "bot", "phase": "restarting"}))
+        self.assertFalse(self.module.looks_like_bot_status({"kind": "host", "phase": "restarting"}))
 
 
 if __name__ == "__main__":
