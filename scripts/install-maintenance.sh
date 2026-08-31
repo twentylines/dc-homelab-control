@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-# Install the root-owned bridge used for Ubuntu maintenance and verified
+# Install the root-owned bridge used for supported host maintenance and verified
 # Homelab Control releases.  This script never downloads a release and never
 # starts or restarts containers; the bridge only acts on a signed, explicitly
 # queued request from the authenticated controller.

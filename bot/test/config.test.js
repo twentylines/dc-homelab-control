@@ -18,7 +18,7 @@ test('optional config file fills blank deployment fields without overriding expl
   ].join('\n'));
   const script = [
     "import { config } from './src/config.js';",
-    "console.log(JSON.stringify({ token: config.controlToken, discord: config.discordToken, guild: config.guildId, bot: config.botName }));",
+    "console.log(JSON.stringify({ token: config.controlToken, discord: config.discordToken, guild: config.guildId, bot: config.botName, mode: config.serviceControlMode }));",
   ].join('\n');
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
     cwd: new URL('..', import.meta.url),
@@ -41,6 +41,7 @@ test('optional config file fills blank deployment fields without overriding expl
     assert.equal(output.discord, 'file-discord-token');
     assert.equal(output.guild, '234567890123456789');
     assert.equal(output.bot, 'File configured bot');
+    assert.equal(output.mode, 'opt-out');
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

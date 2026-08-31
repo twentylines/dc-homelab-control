@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Small, local-only host bridge for guarded Ubuntu maintenance.
+"""Small, local-only host bridge for guarded apt-based host maintenance.
 
 The Discord bot never receives host root access.  The controller writes one
 allowlisted request into the maintenance directory; this root-owned service
-consumes it, runs only the two maintenance actions below, and writes a
-sanitised status snapshot back for the controller to read.
+consumes it, runs only the host package/restart and control-release actions
+below, and writes a sanitised status snapshot back for the controller to read.
 """
 
 from __future__ import annotations
@@ -40,6 +40,8 @@ BOT_RELEASE_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,
 BOT_RELEASE_VERSION_RE = re.compile(r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$")
 BOT_RELEASE_DIGEST_RE = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
 UPDATE_NOTIFIER_FILE = Path("/var/lib/update-notifier/updates-available")
+OS_RELEASE_FILE = Path("/etc/os-release")
+HOST_UPDATE_SUPPORTED_OS_IDS = {"ubuntu", "debian", "linuxmint", "pop", "elementary"}
 REBOOT_MARKER = Path("/var/run/reboot-required")
 BOOT_ID_FILE = Path("/proc/sys/kernel/random/boot_id")
 POLL_SECONDS = 2.0
@@ -73,6 +75,32 @@ def read_json(path: Path):
         return {}
 
 
+def host_os():
+    """Return a bounded identity for the host this root bridge runs on."""
+    try:
+        lines = OS_RELEASE_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {"id": "unknown", "name": "Unknown OS", "pretty_name": "Unknown OS", "version_id": "", "source": "runtime"}
+    values = {}
+    for line in lines:
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key in {"ID", "NAME", "PRETTY_NAME", "VERSION_ID"}:
+            value = re.sub(r"[\r\n]+", " ", value.strip().strip('"').strip("'"))
+            values[key] = re.sub(r"\s+", " ", value)
+    identifier = re.sub(r"[^a-z0-9._+-]", "", values.get("ID", "").lower()) or "unknown"
+    name = values.get("NAME") or identifier.title() or "Unknown OS"
+    pretty = values.get("PRETTY_NAME") or name
+    return {
+        "id": identifier[:40],
+        "name": name[:80],
+        "pretty_name": pretty[:120],
+        "version_id": re.sub(r"[^a-zA-Z0-9._+-]", "", values.get("VERSION_ID", ""))[:40],
+        "source": "os-release",
+    }
+
+
 def write_json(path: Path, value: dict):
     MAINTENANCE_DIR.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -82,10 +110,18 @@ def write_json(path: Path, value: dict):
 
 
 def notifier_summary():
+    os_info = host_os()
+    if os_info["id"] not in HOST_UPDATE_SUPPORTED_OS_IDS:
+        return {
+            "available": False,
+            "os": os_info,
+            "update_supported": False,
+            "detail": f"{os_info['pretty_name']} is detected; this bridge only supports apt-based host updates",
+        }
     try:
         text = UPDATE_NOTIFIER_FILE.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return {"available": False, "detail": "Ubuntu update-notifier data is unavailable"}
+        return {"available": False, "os": os_info, "update_supported": True, "detail": f"{os_info['pretty_name']} update-notifier data is unavailable"}
     pending = None
     security = None
     match = re.search(r"(\d+)\s+updates? can be applied", text, re.I)
@@ -97,6 +133,8 @@ def notifier_summary():
     esm_disabled = "expanded security maintenance for applications is not enabled" in text.lower()
     return {
         "available": True,
+        "os": os_info,
+        "update_supported": True,
         "pending_count": pending,
         "security_count": security,
         "esm_enabled": not esm_disabled,
@@ -105,9 +143,9 @@ def notifier_summary():
 
 
 def security_origin(origin: str) -> bool:
-    """Return whether an apt origin is an Ubuntu security repository."""
+    """Return whether an apt origin is a supported security repository."""
     value = str(origin or "").lower()
-    return any(marker in value for marker in ("noble-security", "security.ubuntu.com", "esm.ubuntu.com"))
+    return any(marker in value for marker in ("-security", "security.ubuntu.com", "esm.ubuntu.com"))
 
 
 def simulated_update_details():
@@ -158,12 +196,21 @@ def simulated_updates():
 
 
 def host_update_snapshot():
+    os_info = host_os()
+    if os_info["id"] not in HOST_UPDATE_SUPPORTED_OS_IDS:
+        return {
+            "available": False,
+            "os": os_info,
+            "update_supported": False,
+            "checked_at": timestamp(),
+            "detail": f"{os_info['pretty_name']} is detected; this bridge only supports apt-based host updates",
+        }
     notifier = notifier_summary()
     simulated = simulated_update_details()
     packages = simulated["packages"]
     deferred_packages = simulated["deferred_packages"]
     if not notifier.get("available") and not packages:
-        return {"available": False, "detail": notifier.get("detail", "Ubuntu update status unavailable")}
+        return {"available": False, "os": os_info, "update_supported": True, "detail": notifier.get("detail", f"{os_info['pretty_name']} update status unavailable")}
     pending = len(packages) if packages else notifier.get("pending_count")
     security_packages = [package["name"] for package in packages if package.get("security")]
     notifier_security = notifier.get("security_count")
@@ -175,13 +222,15 @@ def host_update_snapshot():
     if security_count is None:
         security_detail = "Security classification unavailable from the current package metadata"
     elif security_count == 0:
-        security_detail = "No Ubuntu security updates in the current upgrade plan"
+        security_detail = f"No {os_info['name']} security updates in the current upgrade plan"
     elif security_packages:
         security_detail = "Security packages are marked with a lock icon below"
     else:
-        security_detail = "Ubuntu reports security updates, but apt is currently deferring their package plan"
+        security_detail = f"{os_info['name']} reports security updates, but apt is currently deferring their package plan"
     result = {
         "available": True,
+        "os": os_info,
+        "update_supported": True,
         "checked_at": timestamp(),
         "pending_count": pending,
         "security_count": security_count,
@@ -248,6 +297,16 @@ def bot_version(value: str):
     if not match:
         return None
     return str(value).strip().lstrip("v")
+
+
+def _release_version_key(value):
+    """Return a stable-channel comparison key for a validated release tag."""
+    normalised = bot_version(value)
+    if not normalised:
+        return None
+    base, _, prerelease = normalised.partition("-")
+    numbers = tuple(int(part) for part in base.split("."))
+    return (*numbers, 1 if not prerelease else 0, prerelease or "")
 
 
 def docker_binary():
@@ -457,9 +516,35 @@ def restore_release(status: dict, snapshot: dict):
             pass
 
 
+def stage_verified_release(status: dict, request: dict, validated):
+    """Download, verify and stage one exact GitHub release archive."""
+    _repository, _tag, version, asset_name, _asset_url, digest = validated
+    status.update({"phase": "downloading", "requested_version": version, "asset_name": asset_name})
+    write_bot_status(status)
+    BOT_RELEASE_ROOT.mkdir(parents=True, exist_ok=True)
+    os.chmod(BOT_RELEASE_ROOT, 0o700)
+    with tempfile.TemporaryDirectory(prefix="homelab-control-release-", dir=str(BOT_RELEASE_ROOT)) as temporary:
+        temporary_path = Path(temporary)
+        archive = temporary_path / asset_name
+        download_release_archive(status, request, archive, digest)
+        status["phase"] = "verifying"
+        append_bot_event(status, "Checking the archive layout and required control files")
+        write_bot_status(status)
+        extracted = temporary_path / "source"
+        source = safe_extract_release(archive, extracted)
+        staged = BOT_RELEASE_ROOT / version
+        if staged.exists():
+            shutil.rmtree(staged)
+        shutil.move(str(source), str(staged))
+    status["phase"] = "staging"
+    append_bot_event(status, f"Release {version} staged")
+    write_bot_status(status)
+    return staged, version
+
+
 def run_bot_update(request: dict):
     status = base_bot_status(read_bot_status())
-    status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "detail": None, "events": [], "update_supported": bot_update_supported()})
+    status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "requested_version": None, "detail": None, "events": [], "update_supported": bot_update_supported()})
     write_bot_status(status)
     snapshot = None
     try:
@@ -468,26 +553,7 @@ def run_bot_update(request: dict):
         snapshot = release_snapshot()
         if not snapshot.get("agent_image") or not snapshot.get("bot_image"):
             raise RuntimeError("The control containers are not both running; update was not attempted")
-        status.update({"phase": "downloading", "requested_version": version, "asset_name": asset_name})
-        write_bot_status(status)
-        BOT_RELEASE_ROOT.mkdir(parents=True, exist_ok=True)
-        os.chmod(BOT_RELEASE_ROOT, 0o700)
-        with tempfile.TemporaryDirectory(prefix="homelab-control-release-", dir=str(BOT_RELEASE_ROOT)) as temporary:
-            temporary_path = Path(temporary)
-            archive = temporary_path / asset_name
-            download_release_archive(status, request, archive, digest)
-            status["phase"] = "verifying"
-            append_bot_event(status, "Checking the archive layout and required control files")
-            write_bot_status(status)
-            extracted = temporary_path / "source"
-            source = safe_extract_release(archive, extracted)
-            staged = BOT_RELEASE_ROOT / version
-            if staged.exists():
-                shutil.rmtree(staged)
-            shutil.move(str(source), str(staged))
-        status["phase"] = "staging"
-        append_bot_event(status, f"Release {version} staged")
-        write_bot_status(status)
+        staged, version = stage_verified_release(status, request, validated)
         override = BOT_RELEASE_ROOT / f"update-{status.get('job_id') or version}.yml"
         compose_override(override, contexts={"agent": staged / "agent", "bot": staged / "bot"}, images={"agent": f"local/homelab-control-agent:{version}", "bot": f"local/homelab-control-bot:{version}"})
         try:
@@ -523,6 +589,7 @@ def run_bot_update(request: dict):
             "phase": "complete",
             "current_version": version,
             "previous_version": snapshot_version(snapshot),
+            "rollback_source": "local",
             "rollback_images": snapshot,
             "rollback_available": True,
             "completed_at": timestamp(),
@@ -539,23 +606,81 @@ def run_bot_update(request: dict):
 
 def run_bot_rollback(request: dict):
     status = base_bot_status(read_bot_status())
-    status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "detail": None, "events": [], "update_supported": bot_update_supported()})
+    status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "requested_version": None, "detail": None, "events": [], "update_supported": bot_update_supported()})
     write_bot_status(status)
+    current = None
+    restore_attempted = False
+    local_restore_succeeded = False
     try:
         snapshot = status.get("rollback_images")
-        if not status.get("rollback_available") or not isinstance(snapshot, dict):
-            raise RuntimeError("No previous control images are available")
         current = release_snapshot()
-        target_version = snapshot_version(snapshot)
-        status["phase"] = "restarting"
-        append_bot_event(status, f"Restoring control release {target_version}")
-        write_bot_status(status)
-        if not restore_release(status, snapshot):
-            raise RuntimeError("The previous control release did not pass its health checks")
+        if not current.get("agent_image") or not current.get("bot_image"):
+            raise RuntimeError("The running control containers could not be identified; rollback was not attempted")
+        using_local_images = bool(status.get("rollback_available") and isinstance(snapshot, dict) and snapshot.get("agent_image") and snapshot.get("bot_image"))
+        if using_local_images:
+            target_version = snapshot_version(snapshot)
+            status["phase"] = "restarting"
+            append_bot_event(status, f"Restoring control release {target_version} from retained images")
+            write_bot_status(status)
+            restore_attempted = True
+            if restore_release(status, snapshot):
+                local_restore_succeeded = True
+            else:
+                # A retained pair can be pruned or become unusable while the
+                # GitHub release remains available.  Continue with the exact
+                # metadata selected by the agent instead of leaving the user
+                # with a dead Revert button.
+                append_bot_event(status, "Retained images did not pass health checks; trying the verified GitHub release")
+                write_bot_status(status)
+                using_local_images = False
+        if not using_local_images:
+            # A fresh install, a pruned image pair, or a failed local restore
+            # can still revert to the highest earlier verified GitHub release.
+            validated = validated_release_request(request)
+            _repository, _tag, target_version, _asset_name, _asset_url, _digest = validated
+            current_version = snapshot_version(current)
+            if _release_version_key(target_version) and _release_version_key(current_version) and _release_version_key(target_version) >= _release_version_key(current_version):
+                raise RuntimeError("The requested GitHub release is not earlier than the running release")
+            staged, target_version = stage_verified_release(status, request, validated)
+            override = BOT_RELEASE_ROOT / f"rollback-update-{status.get('job_id') or target_version}.yml"
+            compose_override(override, contexts={"agent": staged / "agent", "bot": staged / "bot"}, images={"agent": f"local/homelab-control-agent:{target_version}", "bot": f"local/homelab-control-bot:{target_version}"})
+            try:
+                status["phase"] = "building"
+                append_bot_event(status, "Validating the rollback Compose merge")
+                write_bot_status(status)
+                if not run_command(status, compose_base_command() + ["-f", str(override), "config", "--quiet"], "Checking the rollback Compose definition"):
+                    raise RuntimeError("The rollback Compose definition failed validation")
+                if not run_command(status, compose_base_command() + ["-f", str(override), "build", "agent", "bot"], "Building the previous control images"):
+                    raise RuntimeError("The previous control image build failed")
+                status["phase"] = "restarting"
+                append_bot_event(status, f"Recreating the control containers with release {target_version}")
+                write_bot_status(status)
+                if not run_command(status, compose_base_command() + ["-f", str(override), "up", "-d", "--no-deps", "agent", "bot"], "Starting the previous control release"):
+                    raise RuntimeError("The previous control containers could not be started")
+                status["phase"] = "verifying_runtime"
+                append_bot_event(status, "Waiting for agent and bot health checks")
+                write_bot_status(status)
+                if not wait_control_health(status):
+                    raise RuntimeError("The fetched previous control release did not become healthy")
+            except Exception:
+                if current and restore_release(status, current):
+                    status["detail"] = "The fetched previous release failed verification; the current control release was restored"
+                else:
+                    status["detail"] = "The fetched previous release failed and automatic restoration could not be verified"
+                status["phase"] = "failed"
+                write_bot_status(status)
+                return
+            finally:
+                try:
+                    override.unlink()
+                except OSError:
+                    pass
+            append_bot_event(status, f"Fetched and verified GitHub release {target_version}")
         status.update({
             "phase": "rolled_back",
             "current_version": target_version,
             "previous_version": snapshot_version(current),
+            "rollback_source": "local" if using_local_images else "github",
             "rollback_images": current,
             "rollback_available": bool(current.get("agent_image") and current.get("bot_image")),
             "completed_at": timestamp(),
@@ -564,6 +689,12 @@ def run_bot_rollback(request: dict):
         append_bot_event(status, "Previous bot release restored and verified")
         write_bot_status(status)
     except Exception as exc:
+        # If a retained-image attempt changed the control pair and no GitHub
+        # fallback was available, put the running pair back before reporting
+        # the refusal.  The nested GitHub path already performs this recovery
+        # for failures after its own switch attempt.
+        if current and restore_attempted and not local_restore_succeeded:
+            restore_release(status, current)
         status["phase"] = "failed"
         status["detail"] = clean_line(str(exc), 240)
         append_bot_event(status, "Rollback was refused or could not be verified")
@@ -604,19 +735,19 @@ def run_command(status: dict, command: list[str], label: str) -> bool:
         process.kill()
         append_event(status, "The package manager timed out; no reboot was requested")
         status["phase"] = "failed"
-        status["detail"] = "Ubuntu package operation timed out"
+        status["detail"] = f"{host_os()['name']} package operation timed out"
         save_status(status)
         return False
     except OSError as exc:
         append_event(status, f"Could not start package manager ({exc.__class__.__name__})")
         status["phase"] = "failed"
-        status["detail"] = "Ubuntu package manager could not be started"
+        status["detail"] = f"{host_os()['name']} package manager could not be started"
         save_status(status)
         return False
     if return_code != 0:
         append_event(status, f"Package manager exited with code {return_code}")
         status["phase"] = "failed"
-        status["detail"] = f"Ubuntu package operation failed (exit {return_code})"
+        status["detail"] = f"{host_os()['name']} package operation failed (exit {return_code})"
         save_status(status)
         return False
     return True
@@ -625,17 +756,25 @@ def run_command(status: dict, command: list[str], label: str) -> bool:
 def apply_updates(request: dict):
     status = base_status()
     status.update({"phase": "checking", "job_id": request.get("job_id"), "started_at": timestamp(), "detail": None, "events": []})
-    append_event(status, "Ubuntu maintenance accepted; no automatic reboot will be performed")
+    snapshot = host_update_snapshot()
+    status.update(snapshot)
+    if not status.get("update_supported", False):
+        status["phase"] = "failed"
+        append_event(status, status.get("detail") or "Host update bridge does not support this operating system")
+        save_status(status)
+        return
+    os_name = (status.get("os") or {}).get("name", "Host")
+    append_event(status, f"{os_name} maintenance accepted; no automatic reboot will be performed")
     save_status(status)
-    if not run_command(status, ["/usr/bin/apt-get", "update"], "Refreshing the Ubuntu package catalogue"):
+    if not run_command(status, ["/usr/bin/apt-get", "update"], f"Refreshing the {os_name} package catalogue"):
         return
     status["phase"] = "applying"
-    append_event(status, "Applying standard Ubuntu upgrades (configuration files are kept)")
+    append_event(status, f"Applying standard {os_name} upgrades (configuration files are kept)")
     save_status(status)
     if not run_command(
         status,
         ["/usr/bin/apt-get", "-y", "-o", "Dpkg::Options::=--force-confold", "upgrade"],
-        "Installing available Ubuntu updates",
+        f"Installing available {os_name} updates",
     ):
         return
     snapshot = host_update_snapshot()
@@ -645,9 +784,9 @@ def apply_updates(request: dict):
     status["completed_at"] = timestamp()
     append_event(status, "Updates applied successfully")
     if status["reboot_required"]:
-        append_event(status, "Ubuntu reports that a restart is required; waiting for your confirmation")
+        append_event(status, f"{os_name} reports that a restart is required; waiting for your confirmation")
     else:
-        append_event(status, "Ubuntu does not currently report a restart requirement")
+        append_event(status, f"{os_name} does not currently report a restart requirement")
     save_status(status)
 
 
@@ -661,7 +800,7 @@ def request_reboot(request: dict):
         return
     if status.get("phase") != "ready_for_reboot" or not REBOOT_MARKER.exists():
         status["phase"] = "failed"
-        status["detail"] = "Ubuntu is not waiting for a confirmed restart"
+        status["detail"] = "The host is not waiting for a confirmed restart"
         append_event(status, "Restart refused because no confirmed reboot is pending")
         save_status(status)
         return

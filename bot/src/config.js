@@ -85,7 +85,7 @@ export const config = Object.freeze({
   botName: bounded(optional('BOT_NAME'), 'Homelab Control'),
   serverName: bounded(optional('SERVER_NAME'), ''),
   timeZone: bounded(optional('TIME_ZONE'), 'UTC', 64),
-  serviceControlMode: controlMode || 'opt-in',
+  serviceControlMode: controlMode || 'opt-out',
   configFile: process.env.HOMELAB_CONTROL_CONFIG_FILE?.trim() || '/data/config.env',
   mediaRequiredProviders: list('MEDIA_REQUIRED_PROVIDERS'),
   mediaStackProfile: bounded(optional('MEDIA_STACK_PROFILE'), 'auto', 32).toLowerCase(),

@@ -14,8 +14,10 @@ The bot has no Docker socket. The agent has the socket because Docker lifecycle
 actions require it, but it accepts only dedicated HTTP routes, validates
 identifiers, refuses control-plane containers, records mutations, drops Linux
 capabilities, uses a read-only root filesystem, and has bounded request
-sizes/timeouts. Service controls are opt-in by default: an administrator must
-enable a container before lifecycle buttons appear.
+sizes/timeouts. Service controls are opt-out by default: protected containers
+and explicit opt-outs remain read-only, while every mutating action still
+requires an administrator confirmation. Set `SERVICE_CONTROL_MODE=opt-in` for
+approval-before-controls.
 
 Integration credentials are optional and should be read-only tokens wherever
 the upstream application supports them. Do not paste a Discord webhook, bot

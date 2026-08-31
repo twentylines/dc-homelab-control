@@ -30,7 +30,10 @@ cd homelab-control
 The first run creates `config.env` and exits. Open it in a local editor and
 replace the five required values. Generate `CONTROL_TOKEN` with a password
 manager or a cryptographically secure random generator; it must be at least 32
-characters. Keep `SERVICE_CONTROL_MODE=opt-in`.
+characters. The default `SERVICE_CONTROL_MODE=opt-out` exposes detected
+containers to administrators after confirmation while protected or explicitly
+disabled containers remain read-only. Set `SERVICE_CONTROL_MODE=opt-in` if you
+want to approve every container before its controls appear.
 
 ## 3. Add only the integrations you use
 
@@ -76,8 +79,11 @@ the project name used by `docker compose`. The maintenance directory in this
 file must be the same host directory mounted read-write at `/host/maintenance`
 in the agent. The bridge validates the repository and exact GitHub asset URL,
 verifies the digest, checks the archive contents, rebuilds only `agent` and
-`bot`, waits for both health checks, and keeps the prior images for rollback.
-It never updates other containers and never restarts the host.
+`bot`, waits for both health checks, and keeps the prior images for rollback. If
+those images have been pruned, `/updates` supplies the highest earlier stable
+release with a verified GitHub archive; the bridge validates that metadata
+again before it downloads anything. It never updates other containers and
+never restarts the host.
 
 ## 4. Validate, then start
 

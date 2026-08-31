@@ -16,8 +16,8 @@ still be filled from that file.
 | `DISCORD_ADMIN_USER_IDS` / `DISCORD_ADMIN_ROLE_IDS` | No | Extra administrators. |
 | `DISCORD_GUEST_USER_IDS` / `DISCORD_GUEST_ROLE_IDS` | No | Read-only users; `/wake` remains available. |
 | `BOT_NAME` / `SERVER_NAME` / `TIME_ZONE` | No | Branding and timestamps. |
-| `SERVICE_CONTROL_MODE` | No | `opt-in` (default) or `opt-out`. Keep opt-in initially. |
-| `HOMELAB_CONTROL_REPOSITORY` | No | Public GitHub `owner/repository` used for bot release checks. |
+| `SERVICE_CONTROL_MODE` | No | `opt-out` (default), or `opt-in` for approval-before-controls. |
+| `HOMELAB_CONTROL_REPOSITORY` | No | Public GitHub `owner/repository` used for bot update and rollback checks. |
 | `HOMELAB_CONTROL_VERSION` | No | Installed bot release, used for safe version comparison. |
 | `HOMELAB_CONTROL_RELEASE_CHANNEL` | No | `stable` only in this release; pre-releases are ignored. |
 | `HOMELAB_CONTROL_RELEASE_ASSET` | No | Exact archive filename when a release contains more than one archive. |
@@ -53,6 +53,14 @@ The root bridge reads its own `/etc/homelab-control/maintenance.env`. Its
 `HOMELAB_CONTROL_COMPOSE_PROJECT` identify the existing control deployment.
 The bridge keeps release images under `HOMELAB_CONTROL_RELEASE_ROOT` and never
 uses a shell-evaluated update command.
+
+For `/updates` bot rollback, the agent first reports a retained local image
+pair when one exists. If it does not, it checks the configured public GitHub
+repository for the highest earlier stable semantic version with exactly one
+source archive and a GitHub SHA-256 digest. The administrator sees that version
+on the version rollback button; the root bridge re-validates the repository, tag,
+download path, archive layout and digest before rebuilding only the control
+agent and bot.
 
 ## Secret handling
 

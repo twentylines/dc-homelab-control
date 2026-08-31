@@ -15,7 +15,7 @@ import { config } from './config.js';
 import { favoriteNames, getFavorite, saveFavorite } from './favorites.js';
 import { wakeDevice } from './wol.js';
 import {
-  actionLoadingEmbed, base, bytes, colors, errorEmbed, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows,
+  actionLoadingEmbed, backButton, backRow, base, bytes, colors, errorEmbed, helpEmbed, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, operatingSystemIcon, operatingSystemShortLabel, pingEmbed,
   controlsEmbed, controlsRows, healthEmbed, networkEmbed, panelEmbed, panelRows, reportEmbeds, serviceRows, servicesEmbed, statusEmbed, storageEmbed,
   botReleaseLoadingEmbed, botReleaseResultEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows,
 } from './ui.js';
@@ -38,7 +38,11 @@ export const commandData = [
     .addBooleanOption((option) => option.setName('public').setDescription('Post for everyone in this channel')),
   new SlashCommandBuilder().setName('network').setDescription('Check detected DNS and network services')
     .addBooleanOption((option) => option.setName('public').setDescription('Post for everyone in this channel')),
-  new SlashCommandBuilder().setName('controls').setDescription('Configure administrator controls for detected containers'),
+  new SlashCommandBuilder().setName('controls').setDescription('Review detected container controls (read-only for guests)'),
+  new SlashCommandBuilder().setName('help').setDescription('Show the command guide')
+    .addBooleanOption((option) => option.setName('public').setDescription('Post for everyone in this channel')),
+  new SlashCommandBuilder().setName('ping').setDescription('Measure bot response time')
+    .addBooleanOption((option) => option.setName('public').setDescription('Post for everyone in this channel')),
   new SlashCommandBuilder().setName('health').setDescription('Run a concise homelab health check')
     .addBooleanOption((option) => option.setName('public').setDescription('Post for everyone in this channel')),
   new SlashCommandBuilder().setName('report').setDescription('Generate a detailed homelab health report')
@@ -86,7 +90,7 @@ const loadingProfiles = {
     detail: 'Read-only network check · no DNS or routing changes are being made',
   },
   updates: {
-    steps: ['Request sent to the Runtipi, Ubuntu and GitHub status readers', 'Waiting for catalogue, host and release responses', 'Preparing verified update controls'],
+    steps: ['Request sent to the Runtipi, host OS and GitHub status readers', 'Waiting for catalogue, host and release responses', 'Preparing verified update controls'],
     detail: 'Read-only update check · no update action is being attempted',
   },
   tasks: {
@@ -176,6 +180,7 @@ function serviceActionRows(service, allowActions = true) {
     if (service.state === 'running') buttons.push(new ButtonBuilder().setCustomId(`service-action:${service.key}:stop`).setLabel('Stop').setEmoji('⏹️').setStyle(ButtonStyle.Danger));
   }
   buttons.push(new ButtonBuilder().setCustomId(`service-logs:${service.key}`).setLabel('Recent logs').setEmoji('📜').setStyle(ButtonStyle.Secondary));
+  buttons.push(backButton('services', 'Back to services'));
   return [new ActionRowBuilder().addComponents(buttons)];
 }
 
@@ -211,12 +216,13 @@ function mcActionRows(server, allowActions = true) {
     primary.push(new ButtonBuilder().setCustomId(`mc-console:${server.id}`).setLabel('Console').setEmoji('⌨️').setStyle(ButtonStyle.Secondary));
   }
   if (canManage) primary.push(new ButtonBuilder().setCustomId(`mc-action:${server.id}:backup`).setLabel('Backup').setEmoji('💾').setStyle(ButtonStyle.Secondary));
-  return primary.length ? [new ActionRowBuilder().addComponents(primary)] : [];
+  primary.push(backButton('minecraft', 'Back to Minecraft'));
+  return [new ActionRowBuilder().addComponents(primary)];
 }
 
 async function statusPayload() {
   const data = await agent.status();
-  return { embeds: [statusEmbed(data)], components: panelRows() };
+  return { embeds: [statusEmbed(data)], components: panelRows(true) };
 }
 
 async function panelPayload() {
@@ -232,7 +238,7 @@ async function panelPayload() {
 
 async function healthPayload() {
   const [data, services, media, mediaSummary] = await Promise.all([agent.status(), agent.services(), agent.media(), agent.mediaSummary().catch(() => null)]);
-  return { embeds: [healthEmbed(data, services, media, mediaSummary)], components: panelRows() };
+  return { embeds: [healthEmbed(data, services, media, mediaSummary)], components: panelRows(true) };
 }
 
 async function mediaPayload() {
@@ -244,7 +250,7 @@ async function mediaPayload() {
     agent.mediaSummary().catch(() => null),
     agent.plex().catch(() => null),
   ]);
-  return { embeds: [mediaEmbed(media, playback, hostStatus, resources, summary, plex)], components: panelRows() };
+  return { embeds: [mediaEmbed(media, playback, hostStatus, resources, summary, plex)], components: panelRows(true) };
 }
 
 async function servicesPayload() {
@@ -258,12 +264,12 @@ async function networkPayload() {
     agent.networkSummary().catch(() => null),
     agent.status().catch(() => ({})),
   ]);
-  return { embeds: [networkEmbed(network, summary, status)], components: panelRows() };
+  return { embeds: [networkEmbed(network, summary, status)], components: panelRows(true) };
 }
 
-async function controlsPayload(page = 0) {
+async function controlsPayload(page = 0, allowActions = true) {
   const [services, policy] = await Promise.all([agent.services(), agent.controlPolicy()]);
-  return { embeds: [controlsEmbed(services, policy, { page })], components: controlsRows(services, policy, { page }) };
+  return { embeds: [controlsEmbed(services, policy, { page, allowActions })], components: controlsRows(services, policy, { page, allowActions }) };
 }
 
 function stopTasksLive(messageId) {
@@ -397,7 +403,7 @@ async function sampleTasksWithBackgroundRefresh(interaction, session, lastSnapsh
 
 async function minecraftPayload() {
   const servers = await crafty.servers();
-  if (!servers.length) return { embeds: [base('Minecraft', 'No supported Minecraft panel or Docker server was detected. Configure Crafty, Pterodactyl/Pelican, or start a Minecraft container to have it appear automatically.').setColor(colors.idle)], components: [] };
+  if (!servers.length) return { embeds: [base('Minecraft', 'No supported Minecraft panel or Docker server was detected. Configure Crafty, Pterodactyl/Pelican, or start a Minecraft container to have it appear automatically.').setColor(colors.idle)], components: backRow('panel') };
   return { embeds: [minecraftEmbed(servers)], components: minecraftRows(servers) };
 }
 
@@ -408,7 +414,7 @@ async function reportPayload() {
     agent.mediaSummary().catch(() => null),
     agent.plex().catch(() => null),
   ]);
-  return { embeds: reportEmbeds(status, services, media, audit, systemUpdates, mediaSummary, plex), components: panelRows() };
+  return { embeds: reportEmbeds(status, services, media, audit, systemUpdates, mediaSummary, plex), components: panelRows(true) };
 }
 
 async function updatesPayload(force = false, allowActions = true) {
@@ -417,6 +423,10 @@ async function updatesPayload(force = false, allowActions = true) {
     agent.systemUpdates(force).catch((error) => ({ available: false, detail: error.message })),
   ]);
   return { embeds: [updatesEmbed(snapshot, systemUpdates)], components: updatesRows(snapshot, systemUpdates, allowActions) };
+}
+
+function systemOsName(snapshot, fallback = 'Host') {
+  return operatingSystemShortLabel(snapshot, fallback);
 }
 
 async function runSystemUpdateWorkflow(interaction, initialSnapshot = {}) {
@@ -451,11 +461,13 @@ async function runSystemUpdateWorkflow(interaction, initialSnapshot = {}) {
 }
 
 async function runSystemRebootWorkflow(interaction, jobId) {
-  await interaction.update({ embeds: [base('Ubuntu // restart requested', '🟡 Sending the confirmed restart request to the guarded host bridge…').setColor(colors.warn)], components: [] });
+  const systemSnapshot = await agent.systemUpdates().catch(() => ({}));
+  const osName = systemOsName(systemSnapshot);
+  await interaction.update({ embeds: [base(`${osName} // restart requested`, `🟡 Sending the confirmed restart request to the guarded host bridge…`).setColor(colors.warn)], components: [] });
   try {
-    await notifyMaintenanceEvent('Host restart starting', 'Ubuntu updates are applied. The host restart was explicitly confirmed; the controller will post again when the server is back online.', colors.warn);
+    await notifyMaintenanceEvent('Host restart starting', `${osName} updates are applied. The host restart was explicitly confirmed; the controller will post again when the server is back online.`, colors.warn);
     await agent.requestSystemReboot(jobId, interaction.user);
-    await interaction.editReply({ embeds: [base('Ubuntu // restart queued', '🟡 The host is restarting now. The bot will announce its return in the weekly health channel when the server is back online.').setColor(colors.warn)], components: [] });
+    await interaction.editReply({ embeds: [base(`${osName} // restart queued`, '🟡 The host is restarting now. The bot will announce its return in the weekly health channel when the server is back online.').setColor(colors.warn)], components: [] });
   } catch (error) {
     await interaction.editReply({ embeds: [errorEmbed(error.message)], components: [] });
   }
@@ -494,8 +506,9 @@ async function runBotReleaseWorkflow(interaction, action) {
 }
 
 export async function handleCommand(interaction) {
-  const publicOutputCommands = new Set(['panel', 'status', 'services', 'minecraft', 'media', 'storage', 'tasks', 'network', 'health', 'report', 'audit', 'updates']);
+  const publicOutputCommands = new Set(['panel', 'status', 'services', 'minecraft', 'media', 'storage', 'tasks', 'network', 'health', 'report', 'audit', 'updates', 'help', 'ping']);
   const publicOutput = publicOutputCommands.has(interaction.commandName) && interaction.options.getBoolean('public') === true;
+  const commandStartedAt = Date.now();
   await interaction.deferReply({ ephemeral: !publicOutput });
   let stopLoadingAnimation = null;
   let initialTaskSnapshot = null;
@@ -511,10 +524,12 @@ export async function handleCommand(interaction) {
       case 'health': payload = await healthPayload(); break;
       case 'services': payload = await servicesPayload(); break;
       case 'network': payload = await networkPayload(); break;
-      case 'controls': payload = await controlsPayload(); break;
+      case 'controls': payload = await controlsPayload(0, isAdmin(interaction)); break;
+      case 'help': payload = { embeds: [helpEmbed()], components: panelRows(true) }; break;
+      case 'ping': payload = { embeds: [pingEmbed({ processingMs: Date.now() - commandStartedAt, websocketMs: interaction.client?.ws?.ping })], components: panelRows(true) }; break;
       case 'minecraft': payload = await minecraftPayload(); break;
       case 'media': payload = await mediaPayload(); break;
-      case 'storage': payload = { embeds: [storageEmbed(await agent.status())], components: panelRows() }; break;
+      case 'storage': payload = { embeds: [storageEmbed(await agent.status())], components: panelRows(true) }; break;
       case 'tasks': {
         const taskResult = await tasksSnapshotPayload(true);
         initialTaskSnapshot = taskResult.snapshot;
@@ -546,13 +561,13 @@ export async function handleCommand(interaction) {
         } else if (rawMac && requestedLabel) {
           savedMessage = '\n(Only admins can save new favourites.)';
         }
-        payload = { embeds: [base('Wake signal sent', `⚡ Wake-on-LAN packet sent to **${label.replace(/[*_`]/g, '')}**.${savedMessage}`).setColor(colors.ok)] };
+        payload = { embeds: [base('Wake signal sent', `⚡ Wake-on-LAN packet sent to **${label.replace(/[*_`]/g, '')}**.${savedMessage}`).setColor(colors.ok)], components: backRow('panel') };
         break;
       }
       case 'audit': {
         const events = await agent.audit();
         const description = events.length ? events.slice(-15).reverse().map((event) => `• <t:${Math.floor(new Date(event.timestamp).getTime() / 1000)}:R> **${event.actor_name}** — ${event.action} ${event.service} (${event.result})`).join('\n') : 'No control actions have been recorded.';
-        payload = { embeds: [base('Control audit', description)] };
+        payload = { embeds: [base('Control audit', description)], components: panelRows(true) };
         break;
       }
       default: throw new Error('Unknown command');
@@ -585,17 +600,15 @@ export async function handleComponent(interaction) {
       const messageId = interaction.message?.id || interaction.id;
       stopTasksLive(messageId);
       const target = interaction.customId.split(':')[1];
-      if (target === 'controls' && !isAdmin(interaction)) {
-        throw new Error('Administrator access is required to view control policy');
-      }
       await interaction.deferUpdate();
       let taskSnapshot = null;
       let payload;
-      if (target === 'services') payload = await servicesPayload();
+      if (target === 'panel') payload = await panelPayload();
+      else if (target === 'services') payload = await servicesPayload();
       else if (target === 'network') payload = await networkPayload();
-      else if (target === 'controls') payload = await controlsPayload();
+      else if (target === 'controls') payload = await controlsPayload(0, isAdmin(interaction));
       else if (target === 'minecraft') payload = await minecraftPayload();
-      else if (target === 'storage') payload = { embeds: [storageEmbed(await agent.status())], components: panelRows() };
+      else if (target === 'storage') payload = { embeds: [storageEmbed(await agent.status())], components: panelRows(true) };
       else if (target === 'media') payload = await mediaPayload();
       else if (target === 'tasks') {
         const taskResult = await tasksPayloadWithLoading(interaction, true);
@@ -621,45 +634,57 @@ export async function handleComponent(interaction) {
     }
 
     if (interaction.customId.startsWith('controls:page:')) {
-      if (!isAdmin(interaction)) throw new Error('Administrator access is required to view control policy');
       const page = Math.max(0, Number(interaction.customId.split(':')[2] || 1) - 1);
       await interaction.deferUpdate();
-      await interaction.editReply(await controlsPayload(page));
+      await interaction.editReply(await controlsPayload(page, isAdmin(interaction)));
       return;
     }
 
     if (interaction.customId.startsWith('controls:refresh') || interaction.customId.startsWith('control:back')) {
-      if (!isAdmin(interaction)) throw new Error('Administrator access is required to view control policy');
       const parts = interaction.customId.split(':');
       const page = Math.max(0, Number(parts[2] || 1) - 1);
       await interaction.deferUpdate();
-      await interaction.editReply(await controlsPayload(page));
+      await interaction.editReply(await controlsPayload(page, isAdmin(interaction)));
+      return;
+    }
+
+    if (interaction.customId === 'controls:mode') {
+      if (!isAdmin(interaction)) throw new Error('Administrator access is required to change control mode');
+      const mode = interaction.values?.[0];
+      if (!mode) throw new Error('Choose a control mode first');
+      await interaction.deferUpdate();
+      const policy = await agent.setControlMode(mode, interaction.user);
+      const services = await agent.services();
+      await interaction.editReply({ embeds: [controlsEmbed(services, policy, { allowActions: true })], components: controlsRows(services, policy, { allowActions: true }) });
       return;
     }
 
     if (interaction.customId === 'updates:system-apply') {
-      if (!isAdmin(interaction)) throw new Error('Admin access is required for Ubuntu updates');
+      if (!isAdmin(interaction)) throw new Error('Admin access is required for host updates');
       const systemUpdates = await agent.systemUpdates(true);
-      if (!systemUpdates.maintenance_available) throw new Error('The guarded Ubuntu maintenance bridge is not installed');
-      if (Number(systemUpdates.pending_count) <= 0) throw new Error('No pending Ubuntu updates were confirmed; refresh and try again');
-      if (['checking', 'applying', 'rebooting', 'ready_for_reboot'].includes(systemUpdates.phase)) throw new Error('Ubuntu maintenance is already in progress or waiting for a restart confirmation');
+      const osName = systemOsName(systemUpdates);
+      if (systemUpdates.update_supported === false) throw new Error(`${osName} host updates are not supported by the installed maintenance bridge`);
+      if (!systemUpdates.maintenance_available) throw new Error(`The guarded ${osName} maintenance bridge is not installed`);
+      if (Number(systemUpdates.pending_count) <= 0) throw new Error(`No pending ${osName} updates were confirmed; refresh and try again`);
+      if (['checking', 'applying', 'rebooting', 'ready_for_reboot'].includes(systemUpdates.phase)) throw new Error(`${osName} maintenance is already in progress or waiting for a restart confirmation`);
       const id = stageConfirmation(interaction.user.id, { type: 'system-update', snapshot: systemUpdates });
       await interaction.reply({
         ephemeral: true,
-        embeds: [base('Confirm Ubuntu updates', `Apply the **${systemUpdates.pending_count}** pending Ubuntu updates, including **${systemUpdates.security_count ?? 'unknown'}** security updates?\n\nThe bot will stream progress and will **not** restart automatically. A separate confirmation is required if Ubuntu requests one.`).setColor(colors.warn)],
+        embeds: [base(`Confirm ${osName} updates`, `Apply the **${systemUpdates.pending_count}** pending ${osName} updates, including **${systemUpdates.security_count ?? 'unknown'}** security updates?\n\nThe bot will stream progress and will **not** restart automatically. A separate confirmation is required if ${osName} requests one.`).setColor(colors.warn)],
         components: confirmRows(id),
       });
       return;
     }
 
     if (interaction.customId === 'updates:system-reboot') {
-      if (!isAdmin(interaction)) throw new Error('Admin access is required to restart Ubuntu');
+      if (!isAdmin(interaction)) throw new Error('Admin access is required to restart the host');
       const systemUpdates = await agent.systemUpdates(true);
-      if (systemUpdates.phase !== 'ready_for_reboot' || !systemUpdates.reboot_required) throw new Error('Ubuntu is no longer waiting for a confirmed restart; refresh and try again');
+      const osName = systemOsName(systemUpdates);
+      if (systemUpdates.phase !== 'ready_for_reboot' || !systemUpdates.reboot_required) throw new Error(`${osName} is no longer waiting for a confirmed restart; refresh and try again`);
       const id = stageConfirmation(interaction.user.id, { type: 'system-reboot', jobId: systemUpdates.job_id });
       await interaction.reply({
         ephemeral: true,
-        embeds: [base('Confirm host restart', 'Ubuntu reports that the applied updates need a restart. Restart the host now?\n\nThe bot will announce the restart and then post again when the host is back online.').setColor(colors.warn)],
+        embeds: [base('Confirm host restart', `${osName} reports that the applied updates need a restart. Restart the host now?\n\nThe bot will announce the restart and then post again when the host is back online.`).setColor(colors.warn)],
         components: confirmRows(id),
       });
       return;
@@ -678,7 +703,7 @@ export async function handleComponent(interaction) {
         ephemeral: true,
         embeds: [base('Confirm Homelab Control update', `Install the verified GitHub release **${release.latest}**?
 
-Only the control agent and Discord bot images will be rebuilt. Other containers and their data are left untouched. The previous control images are retained so **Revert bot** remains available if verification fails.`).setColor(colors.warn)],
+Only the control agent and Discord bot images will be rebuilt. Other containers and their data are left untouched. The previous control images are retained so a version rollback remains available if verification fails.`).setColor(colors.warn)],
         components: confirmRows(id),
       });
       return;
@@ -691,11 +716,16 @@ Only the control agent and Discord bot images will be rebuilt. Other containers 
       if (!release?.rollback_available) throw new Error('No previous bot release is available to revert to');
       if (!release.update_supported) throw new Error('The guarded host release bridge is not configured');
       const id = stageConfirmation(interaction.user.id, { type: 'bot-rollback', version: release.rollback_version });
+      const source = release.rollback_source === 'github'
+        ? 'The bridge will fetch that exact earlier release from GitHub and verify its SHA-256 digest before building.'
+        : 'The bridge will use the retained previous control images when available; if they were pruned, it will fetch the exact earlier GitHub release and verify its SHA-256 digest.';
       await interaction.reply({
         ephemeral: true,
         embeds: [base('Confirm Homelab Control rollback', `Restore the previous control release${release.rollback_version ? ` **${release.rollback_version}**` : ''}?
 
-The host bridge will switch only the control agent and bot images, then verify both health checks.`).setColor(colors.warn)],
+${source}
+
+Only the control agent and bot containers will be changed, then both health checks must pass.`).setColor(colors.warn)],
         components: confirmRows(id),
       });
       return;
@@ -777,7 +807,7 @@ The host bridge will switch only the control agent and bot images, then verify b
       await interaction.deferReply({ ephemeral: true });
       const key = interaction.customId.split(':')[1];
       const logs = (await agent.logs(key)).join('\n').slice(-3800) || 'No recent logs.';
-      await interaction.editReply({ embeds: [base(`Recent logs • ${key}`, `\`\`\`text\n${logs}\n\`\`\``)] }); return;
+      await interaction.editReply({ embeds: [base(`Recent logs • ${key}`, `\`\`\`text\n${logs}\n\`\`\``)], components: backRow('services', 'Back to services') }); return;
     }
 
     if (interaction.customId.startsWith('service-action:')) {
@@ -788,13 +818,13 @@ The host bridge will switch only the control agent and bot images, then verify b
     }
 
     if (interaction.customId.startsWith('control:select')) {
-      if (!isAdmin(interaction)) throw new Error('Administrator access is required to view control policy');
       await interaction.deferUpdate();
       const policy = await agent.controlPolicy();
       const service = (policy.services || []).find((item) => item.key === interaction.values[0]);
       if (!service) throw new Error('Container no longer exists; refresh the controls view');
       const page = Math.max(0, Number(interaction.customId.split(':')[2] || 1) - 1);
-      await interaction.editReply({ embeds: [controlsEmbed([service], policy, { detail: true, selectedKey: service.key, page })], components: controlsRows([service], policy, { detail: true, selectedKey: service.key, page }) });
+      const allowActions = isAdmin(interaction);
+      await interaction.editReply({ embeds: [controlsEmbed([service], policy, { detail: true, selectedKey: service.key, page, allowActions })], components: controlsRows([service], policy, { detail: true, selectedKey: service.key, page, allowActions }) });
       return;
     }
 
@@ -910,11 +940,11 @@ The host bridge will switch only the control agent and bot images, then verify b
         else await crafty.action(pending.serverId, pending.action, interaction.user);
         actionActive = false;
         await actionAnimation;
-        await interaction.editReply({ embeds: [base('Action completed', `✅ **${pending.action}** completed on **${actionTarget}**.`).setColor(colors.ok)], components: [] });
+        await interaction.editReply({ embeds: [base('Action completed', `✅ **${pending.action}** completed on **${actionTarget}**.`).setColor(colors.ok)], components: backRow(pending.type === 'service' ? 'services' : 'minecraft', pending.type === 'service' ? 'Back to services' : 'Back to Minecraft') });
       } catch (error) {
         actionActive = false;
         await actionAnimation;
-        await interaction.editReply({ embeds: [errorEmbed(error.message)], components: [] });
+        await interaction.editReply({ embeds: [errorEmbed(error.message)], components: backRow(pending.type === 'service' ? 'services' : 'minecraft', pending.type === 'service' ? 'Back to services' : 'Back to Minecraft') });
       }
       return;
     }

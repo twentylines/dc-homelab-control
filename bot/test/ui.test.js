@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { actionLoadingEmbed, bar, base, botReleaseLoadingEmbed, botReleaseResultEmbed, botReleaseSummary, bytes, controlsEmbed, controlsRows, duration, healthEmbed, hostUpdateSummary, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, networkEmbed, panelEmbed, reportEmbeds, serviceRows, servicesEmbed, statusEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows } from '../src/ui.js';
+import { actionLoadingEmbed, bar, base, botReleaseLoadingEmbed, botReleaseResultEmbed, botReleaseSummary, bytes, controlsEmbed, controlsRows, duration, healthEmbed, helpEmbed, hostUpdateSummary, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, networkEmbed, operatingSystemLabel, operatingSystemShortLabel, panelEmbed, pingEmbed, reportEmbeds, serviceRows, servicesEmbed, statusEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows } from '../src/ui.js';
 import { minecraftInternals } from '../src/minecraft.js';
 
 const sampleStatus = {
@@ -19,6 +19,16 @@ test('formats host measurements for phone-friendly embeds', () => {
   assert.equal(bytes(1073741824), '1.0 GiB');
   assert.equal(duration(90061), '1d 1h 1m');
   assert.match(bar(50), /50%/);
+});
+
+test('uses the detected operating system and provides distinct help and ping views', () => {
+  const fedora = { os: { id: 'fedora', name: 'Fedora Linux', pretty_name: 'Fedora Linux 42' } };
+  assert.equal(operatingSystemLabel(fedora), 'Fedora Linux 42');
+  assert.equal(operatingSystemShortLabel(fedora), 'Fedora Linux');
+  assert.match(helpEmbed().toJSON().description, /read-first control surface/i);
+  const ping = pingEmbed({ processingMs: 12, websocketMs: 34 }).toJSON();
+  assert.match(ping.description, /12 ms/);
+  assert.match(ping.description, /34 ms/);
 });
 
 test('shared footer keeps operational notes compact and consistent', () => {
@@ -182,14 +192,16 @@ test('controls paginate large auto-discovered catalogues without invalid compone
   assert.equal(firstPage.length, 5);
   assert.equal(firstPage[0].components[0].custom_id, 'controls:refresh:1');
   assert.equal(firstPage[0].components.at(-1).custom_id, 'controls:page:2');
-  assert.equal(firstPage[1].components[0].custom_id, 'control:select:1:1');
-  assert.equal(firstPage[4].components[0].custom_id, 'control:select:1:4');
-  assert.equal(lastPage.length, 3);
+  assert.equal(firstPage[1].components[0].custom_id, 'controls:mode');
+  assert.equal(firstPage[2].components[0].custom_id, 'control:select:1:1');
+  assert.equal(firstPage[4].components[0].custom_id, 'control:select:1:3');
+  assert.equal(lastPage.length, 5);
   assert.equal(lastPage[0].components.at(-1).custom_id, 'controls:page:1');
-  assert.equal(lastPage[1].components[0].custom_id, 'control:select:2:1');
+  assert.equal(lastPage[1].components[0].custom_id, 'controls:mode');
+  assert.equal(lastPage[2].components[0].custom_id, 'control:select:2:1');
   const embed = controlsEmbed(services, policy, { page: 1 }).toJSON();
   assert.match(embed.description, /Page \*\*2\/2\*\*/);
-  assert.match(embed.fields[0].value, /Container 125/);
+  assert.match(embed.fields[0].value, /Container 75/);
 });
 
 test('Runtipi update UI is bounded and separates status from actions', () => {
@@ -242,7 +254,9 @@ test('bot release UI reports GitHub checks and exposes guarded update and rollba
       asset_verified: true,
       update_supported: true,
       rollback_available: true,
+      rollback_source: 'github',
       rollback_version: '0.3.16',
+      github_rollback_available: true,
       phase: 'idle',
       detail: 'A newer verified release is ready',
     },
@@ -253,11 +267,18 @@ test('bot release UI reports GitHub checks and exposes guarded update and rollba
   assert.match(releaseField.value, /0\.3\.17/);
   assert.match(releaseField.value, /0\.3\.18/);
   assert.match(botReleaseSummary(snapshot.bot), /Verified archive ready to install/);
+  assert.match(botReleaseSummary(snapshot.bot), /from GitHub/);
+  assert.match(botReleaseSummary({ ...snapshot.bot, available: false, detail: 'GitHub latest unavailable' }), /Revert available/);
   const rows = updatesRows(snapshot, true);
   assert.ok(rows.length <= 5);
   const rowIds = rows.flatMap((row) => row.toJSON().components.map((component) => component.custom_id));
   assert.ok(rowIds.includes('updates:bot-update'));
   assert.ok(rowIds.includes('updates:bot-rollback'));
+  const rollbackButton = rows.flatMap((row) => row.toJSON().components).find((component) => component.custom_id === 'updates:bot-rollback');
+  assert.equal(rollbackButton.label, 'Revert to v0.3.16');
+  const prefixedRows = updatesRows({ ...snapshot, bot: { ...snapshot.bot, rollback_version: 'v0.3.16' } }, true);
+  const prefixedRollbackButton = prefixedRows.flatMap((row) => row.toJSON().components).find((component) => component.custom_id === 'updates:bot-rollback');
+  assert.equal(prefixedRollbackButton.label, 'Revert to v0.3.16');
   const loading = botReleaseLoadingEmbed('update', { phase: 'downloading', latest: '0.3.18', events: [{ message: 'Downloading the verified GitHub release archive' }] }, 2).toJSON();
   assert.match(loading.description, /Downloading the release archive/);
   assert.match(loading.description, /both control containers answer their health checks/);
@@ -266,6 +287,9 @@ test('bot release UI reports GitHub checks and exposes guarded update and rollba
   assert.match(result.description, /Bot update verified/);
   assert.match(result.description, /0\.3\.18/);
   assert.match(result.fields[0].value, /Bot release applied and verified/);
+  const rollback = botReleaseResultEmbed('rollback', { phase: 'rolled_back', current: '0.3.16', previous_version: '0.3.17', rollback_source: 'github', detail: 'Release 0.3.16 is running and both control health checks passed', events: [{ message: 'Previous bot release restored and verified' }] }).toJSON();
+  assert.match(rollback.description, /Previous bot release restored/);
+  assert.match(rollback.description, /GitHub archive/);
 });
 
 test('Ubuntu maintenance UI reports pending security work and guarded actions', () => {
@@ -419,8 +443,9 @@ test('Minecraft views show backend and per-server resource samples', () => {
     id: '42', name: 'Survival', running: true, version: '1.21.8', type: 'Paper', backend: 'crafty', panel: 'Crafty Controller', manageable: true, raw: crafty[0].raw,
   });
   const rows = minecraftRows(Array.from({ length: 26 }, (_, index) => ({ id: `server-${index}`, name: `Server ${index}`, running: index === 0 })));
-  assert.equal(rows.length, 2);
-  assert.equal(rows[1].toJSON().components[0].options.length, 1);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].toJSON().components[0].custom_id, 'nav:panel');
+  assert.equal(rows[2].toJSON().components[0].options.length, 1);
 });
 
 test('task manager gives Minecraft its own category', () => {
@@ -472,8 +497,9 @@ test('services view includes auto-discovered containers and paginates selectors'
   const report = reportEmbeds(sampleStatus, services, sampleMedia, []).map((item) => item.toJSON());
   assert.ok(report[1].fields.filter((field) => field.name.includes('Services')).every((field) => field.value.length <= 1024));
   const rows = serviceRows(services);
-  assert.equal(rows.length, 2);
-  assert.equal(rows[0].toJSON().components[0].options.length, 25);
-  assert.equal(rows[1].toJSON().components[0].options.length, 3);
-  assert.equal(rows[1].toJSON().components[0].custom_id, 'service:select:2');
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].toJSON().components[0].custom_id, 'nav:panel');
+  assert.equal(rows[1].toJSON().components[0].options.length, 25);
+  assert.equal(rows[2].toJSON().components[0].options.length, 3);
+  assert.equal(rows[2].toJSON().components[0].custom_id, 'service:select:2');
 });

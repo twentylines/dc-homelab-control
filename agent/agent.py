@@ -67,6 +67,7 @@ HOST_PROC = Path(os.getenv("HOST_PROC", "/host/proc"))
 HOST_HWMON = Path(os.getenv("HOST_HWMON", "/host/sys/class/hwmon"))
 HOST_DMI = Path(os.getenv("HOST_DMI", "/host/sys/firmware/dmi/tables"))
 HOST_HOSTNAME_FILE = Path(os.getenv("HOST_HOSTNAME_FILE", "/host/etc/hostname"))
+HOST_OS_RELEASE_FILE = Path(os.getenv("HOST_OS_RELEASE_FILE", "/host/etc/os-release"))
 HOST_SSD_PATH = Path(os.getenv("HOST_SSD_PATH", "/host/app-data"))
 HOST_SSD_LABEL = os.getenv("HOST_SSD_LABEL", "Application data").strip() or "Application data"
 HOST_MEDIA_PATH = Path(os.getenv("HOST_MEDIA_PATH", "/host/media"))
@@ -97,10 +98,12 @@ HOMELAB_CONTROL_RELEASE_ASSET = os.getenv("HOMELAB_CONTROL_RELEASE_ASSET", "").s
 BOT_RELEASE_STATUS_FILE = MAINTENANCE_DIR / "bot-release.json"
 BOT_RELEASE_CACHE_TTL = max(30.0, min(900.0, float(os.getenv("HOMELAB_CONTROL_RELEASE_CACHE_TTL", "300"))))
 BOT_RELEASE_TIMEOUT = max(3.0, min(30.0, float(os.getenv("HOMELAB_CONTROL_RELEASE_TIMEOUT", "10"))))
-CONTROL_MODE = os.getenv("SERVICE_CONTROL_MODE", "opt-in").strip().lower() or "opt-in"
+CONTROL_MODE = os.getenv("SERVICE_CONTROL_MODE", "opt-out").strip().lower() or "opt-out"
 if CONTROL_MODE not in {"opt-in", "opt-out"}:
-    CONTROL_MODE = "opt-in"
+    CONTROL_MODE = "opt-out"
 CONTROL_POLICY_FILE = DATA_DIR / "control-policy.json"
+
+HOST_UPDATE_SUPPORTED_OS_IDS = {"ubuntu", "debian", "linuxmint", "pop", "elementary"}
 
 # Provider names in onboarding are intentionally forgiving.  People tend to
 # write ``overseerr``/``seerr`` and ``qbit``/``qbittorrent`` interchangeably;
@@ -801,9 +804,12 @@ def http_probe(probe):
             code = int(response.status)
         finally:
             response.close()
+        elapsed_ms = round((time.monotonic() - started) * 1000)
         return {
             "health": "healthy" if code < 500 else "unhealthy",
-            "health_detail": f"HTTP {code} • {round((time.monotonic() - started) * 1000)} ms",
+            "health_detail": f"HTTP {code} • {elapsed_ms} ms",
+            "latency_ms": elapsed_ms,
+            "probe_type": "HTTP HEAD",
         }
     except (http.client.HTTPException, TimeoutError, OSError) as exc:
         reason = getattr(exc, "reason", None) or exc
@@ -845,7 +851,7 @@ def apply_service_health(output):
             try:
                 results[key] = future.result()
             except Exception as exc:  # Keep one broken probe from hiding the fleet.
-                results[key] = {"health": "unreachable", "health_detail": exc.__class__.__name__}
+                results[key] = {"health": "unreachable", "health_detail": exc.__class__.__name__, "probe_type": "HTTP HEAD"}
 
     for service in output:
         result = results.get(service["key"])
@@ -1001,13 +1007,40 @@ def control_policy():
             "override": override,
             "identity": identity,
         })
+    mode_description = (
+        "Detected containers are controllable by default; protected containers and any explicit opt-outs stay read-only"
+        if policy["mode"] == "opt-out"
+        else "Detected containers are read-only by default; an administrator must explicitly enable each control"
+    )
     return {
         "version": 1,
         "mode": policy["mode"],
         "default": "controls disabled until an administrator enables them" if policy["mode"] == "opt-in" else "controls enabled unless an administrator disables them",
+        "mode_description": mode_description,
         "protected_defaults": "Control plane, Runtipi core, Docker plumbing and the controller itself remain protected",
         "services": services,
     }
+
+
+def set_control_mode(mode: str, actor_id: str, actor_name: str):
+    mode = str(mode or "").strip().lower()
+    if mode not in {"opt-in", "opt-out"}:
+        raise ValueError("mode must be opt-in or opt-out")
+    policy = _policy_read()
+    if policy["mode"] != mode:
+        policy["mode"] = mode
+        _policy_write(policy)
+        with _service_cache_lock:
+            global _service_cache_timestamp
+            _service_cache_timestamp = 0
+        append_audit({
+            "actor_id": sanitize_audit_value(actor_id),
+            "actor_name": sanitize_audit_value(actor_name),
+            "action": "control_mode",
+            "service": "all containers",
+            "result": mode,
+        })
+    return control_policy()
 
 
 def set_control_policy(key: str, enabled: bool, actor_id: str, actor_name: str):
@@ -1448,6 +1481,42 @@ def host_hostname():
     return platform.node() or "home-server"
 
 
+def _clean_os_value(value, maximum=120):
+    value = str(value or "").strip().strip('"').strip("'")
+    value = re.sub(r"[\r\n]+", " ", value)
+    value = re.sub(r"\s+", " ", value)
+    return value[:maximum]
+
+
+def host_os():
+    """Return a bounded host OS identity from the read-only os-release file."""
+    for path in (HOST_OS_RELEASE_FILE, Path("/etc/os-release")):
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        values = {}
+        for line in raw:
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key in {"ID", "NAME", "PRETTY_NAME", "VERSION_ID"}:
+                values[key] = _clean_os_value(value)
+        identifier = re.sub(r"[^a-z0-9._+-]", "", values.get("ID", "").lower())
+        name = values.get("NAME") or identifier.title() or platform.system() or "Unknown OS"
+        pretty = values.get("PRETTY_NAME") or name
+        return {
+            "id": identifier or "unknown",
+            "name": name[:80],
+            "pretty_name": pretty[:120],
+            "version_id": values.get("VERSION_ID", "")[:40],
+            "source": "os-release",
+        }
+    system = _clean_os_value(platform.system() or "Unknown OS", 80)
+    identifier = re.sub(r"[^a-z0-9._+-]", "", system.lower()) or "unknown"
+    return {"id": identifier, "name": system, "pretty_name": system, "version_id": "", "source": "runtime"}
+
+
 def host_storage():
     candidates = ((HOST_SSD_PATH, HOST_SSD_LABEL), (HOST_MEDIA_PATH, HOST_MEDIA_LABEL))
     output = []
@@ -1475,6 +1544,7 @@ def system_status():
     all_running = sum(1 for container in all_containers if container.get("State") == "running")
     return {
         "hostname": host_hostname(),
+        "os": host_os(),
         "specs": host_specs(),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "uptime_seconds": int(float((HOST_PROC / "uptime").read_text().split()[0])),
@@ -1504,8 +1574,9 @@ def media_status():
         latency = None
         state = provider.get("state")
         url = provider.get("url")
+        endpoint_probe = bool(url and (provider.get("configured") or provider.get("port_source") == "published"))
         try:
-            if url:
+            if endpoint_probe:
                 parsed = urlparse(url)
                 port = parsed.port or (443 if parsed.scheme == "https" else 80)
                 with socket.create_connection((parsed.hostname, port), timeout=2):
@@ -1521,8 +1592,8 @@ def media_status():
             if provider.get("container") and state == "running" and provider.get("port_source") == "default" and not provider.get("configured"):
                 online = True
                 error = None
-        if online:
-            latency = round((time.monotonic() - started) * 1000) if url else None
+        if online and endpoint_probe:
+            latency = round((time.monotonic() - started) * 1000)
         output.append({
             "id": provider["id"],
             "label": provider["label"],
@@ -1532,8 +1603,9 @@ def media_status():
             "latency_ms": latency,
             "error": error,
             "state": state,
-            "health_source": "tcp" if url else "docker",
-            "detail": "endpoint reachable" if url and online else "container running; endpoint is internal or unpublished" if online else "endpoint unavailable",
+            "health_source": "tcp" if endpoint_probe else "docker",
+            "probe_type": "TCP connect" if endpoint_probe else None,
+            "detail": "endpoint reachable" if endpoint_probe and online else "container running; endpoint is internal or unpublished" if online else "endpoint unavailable",
         })
     return output
 
@@ -1687,8 +1759,9 @@ def network_status():
         latency = None
         url = provider.get("url")
         state = provider.get("state")
+        endpoint_probe = bool(url and (provider.get("configured") or provider.get("port_source") == "published"))
         try:
-            if url:
+            if endpoint_probe:
                 parsed = urlparse(url)
                 port = parsed.port or (443 if parsed.scheme == "https" else 80)
                 with socket.create_connection((parsed.hostname, port), timeout=2):
@@ -1700,8 +1773,8 @@ def network_status():
             if provider.get("container") and state == "running" and provider.get("port_source") == "default" and not provider.get("configured"):
                 online = True
                 error = None
-        if online:
-            latency = round((time.monotonic() - started) * 1000) if url else None
+        if online and endpoint_probe:
+            latency = round((time.monotonic() - started) * 1000)
         output.append({
             "id": provider["id"],
             "label": provider["label"],
@@ -1711,8 +1784,9 @@ def network_status():
             "latency_ms": latency,
             "error": error,
             "state": state,
-            "health_source": "tcp" if url else "docker",
-            "detail": "endpoint reachable" if url and online else "container running; endpoint is internal or unpublished" if online else "endpoint unavailable",
+            "health_source": "tcp" if endpoint_probe else "docker",
+            "probe_type": "TCP connect" if endpoint_probe else None,
+            "detail": "endpoint reachable" if endpoint_probe and online else "container running; endpoint is internal or unpublished" if online else "endpoint unavailable",
         })
     return output
 
@@ -2427,6 +2501,83 @@ def _github_release_payload(repository):
     return payload
 
 
+def _github_releases_payload(repository):
+    """Return a bounded list of public releases for safe rollback discovery."""
+    if not _REPOSITORY_RE.fullmatch(repository):
+        raise ValueError("GitHub repository must use owner/repository form")
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repository}/releases?per_page=30",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "Homelab-Control-release-check",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=BOT_RELEASE_TIMEOUT) as response:
+        status = getattr(response, "status", 200)
+        if status != 200:
+            raise RuntimeError(f"GitHub returned HTTP {status}")
+        body = response.read(4 * 1024 * 1024 + 1)
+    if len(body) > 4 * 1024 * 1024:
+        raise RuntimeError("GitHub release metadata is too large")
+    payload = json.loads(body.decode("utf-8"))
+    if not isinstance(payload, list):
+        raise RuntimeError("GitHub returned an unexpected release list")
+    return [entry for entry in payload if isinstance(entry, dict)]
+
+
+def _github_previous_release(repository, current):
+    """Find the highest earlier stable release with one verified archive."""
+    current_key = _release_version_key(current)
+    if not current_key:
+        return None, "The installed bot version is not a safe semantic version"
+    releases = _github_releases_payload(repository)
+    candidates = []
+    for release in releases:
+        if release.get("draft"):
+            continue
+        if HOMELAB_CONTROL_RELEASE_CHANNEL == "stable" and release.get("prerelease"):
+            continue
+        version = _release_version(release.get("tag_name"))
+        version_key = _release_version_key(version)
+        if not version or not version_key or version_key >= current_key:
+            continue
+        asset, detail = _release_archive_asset(release)
+        if not asset or not asset.get("digest"):
+            continue
+        candidates.append((version_key, {
+            "version": version,
+            "tag": str(release.get("tag_name") or "")[:120],
+            "release_url": str(release.get("html_url") or "")[:500],
+            "published_at": str(release.get("published_at") or "")[:80],
+            "asset_name": asset.get("name"),
+            "asset_url": asset.get("url"),
+            "asset_digest": asset.get("digest"),
+        }))
+    if not candidates:
+        return None, "No earlier GitHub release with a verified source archive was found"
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1], None
+
+
+def _github_rollback_fields(repository, current, local_available=False, local_version=None):
+    """Build rollback fields without coupling them to the latest-release check."""
+    try:
+        previous, detail = _github_previous_release(repository, current)
+    except (OSError, urllib.error.URLError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        previous, detail = None, f"Previous GitHub releases could not be checked ({exc.__class__.__name__})"
+    return {
+        "rollback_available": bool(local_available or previous),
+        "rollback_source": "local" if local_available else "github" if previous else None,
+        "rollback_version": local_version if local_available else previous.get("version") if previous else None,
+        "github_rollback_available": bool(previous),
+        "github_rollback_version": previous.get("version") if previous else None,
+        "github_rollback": previous,
+        "rollback_detail": detail,
+        "github_rollback_detail": detail,
+    }
+
+
 def _release_archive_asset(payload):
     assets = payload.get("assets") if isinstance(payload.get("assets"), list) else []
     candidates = []
@@ -2456,7 +2607,7 @@ def _release_archive_asset(payload):
 def _safe_bot_release_state():
     raw = _read_json_file(BOT_RELEASE_STATUS_FILE)
     safe = {}
-    for key in ("phase", "job_id", "updated_at", "started_at", "completed_at", "current_version", "previous_version", "detail"):
+    for key in ("phase", "job_id", "updated_at", "started_at", "completed_at", "requested_version", "current_version", "previous_version", "rollback_source", "detail"):
         if raw.get(key) is None:
             continue
         safe[key] = redact(str(raw.get(key)))[:240] if key == "detail" else str(raw.get(key))[:160]
@@ -2489,8 +2640,13 @@ def bot_release_status(force=False):
         "update_supported": bool(state.get("update_supported")),
         "rollback_available": bool(state.get("rollback_available")),
         "rollback_version": state.get("previous_version"),
+        "rollback_source": state.get("rollback_source") or ("local" if state.get("rollback_available") else None),
+        "github_rollback_available": False,
+        "github_rollback_version": None,
+        "github_rollback": None,
         "phase": state.get("phase", "idle"),
         "job_id": state.get("job_id"),
+        "requested_version": state.get("requested_version"),
         "events": state.get("events", []),
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -2505,7 +2661,7 @@ def bot_release_status(force=False):
     with _bot_release_cache_lock:
         if not force and _bot_release_cache_value is not None and now - _bot_release_cache_timestamp < BOT_RELEASE_CACHE_TTL:
             cached = json.loads(json.dumps(_bot_release_cache_value))
-            cached.update({key: value for key, value in base.items() if key in {"phase", "job_id", "events", "rollback_available", "rollback_version", "update_supported"}})
+            cached.update({key: value for key, value in base.items() if key in {"phase", "job_id", "requested_version", "events", "rollback_available", "rollback_version", "rollback_source", "update_supported"}})
             return cached
     try:
         payload = _github_release_payload(repository)
@@ -2519,6 +2675,8 @@ def bot_release_status(force=False):
         current_key = _release_version_key(base["current"])
         latest_key = _release_version_key(latest)
         update_available = bool(current_key and latest_key and latest_key > current_key)
+        local_rollback = bool(base.get("rollback_available"))
+        rollback_fields = _github_rollback_fields(repository, base["current"], local_rollback, base.get("rollback_version"))
         result = {
             **base,
             "latest": latest,
@@ -2530,10 +2688,12 @@ def bot_release_status(force=False):
             "asset_name": asset.get("name") if asset else None,
             "asset_url": asset.get("url") if asset else None,
             "asset_digest": asset.get("digest") if asset else None,
+            **rollback_fields,
             "detail": asset_detail or ("A newer verified release is ready" if update_available else "This installation is on the latest stable release"),
         }
     except (OSError, urllib.error.URLError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
-        result = {**base, "available": False, "detail": str(exc)[:240]}
+        rollback_fields = _github_rollback_fields(repository, base["current"], bool(base.get("rollback_available")), base.get("rollback_version"))
+        result = {**base, "available": False, **rollback_fields, "detail": str(exc)[:240]}
     with _bot_release_cache_lock:
         _bot_release_cache_timestamp = time.monotonic()
         _bot_release_cache_value = result
@@ -2816,12 +2976,18 @@ def _read_json_file(path: Path):
 
 
 def _update_notifier_snapshot():
-    """Parse Ubuntu's read-only update-notifier summary without exposing host output."""
+    """Parse the host's read-only update summary without exposing host output."""
+    os_info = host_os()
     path = HOST_UPDATE_NOTIFIER_DIR / "updates-available"
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return {"available": False, "detail": "Ubuntu update status is not mounted"}
+        return {
+            "available": False,
+            "os": os_info,
+            "update_supported": os_info["id"] in HOST_UPDATE_SUPPORTED_OS_IDS,
+            "detail": f"{os_info['pretty_name']} update status is not mounted",
+        }
     pending = None
     security = None
     match = re.search(r"(\d+)\s+updates? can be applied", text, re.IGNORECASE)
@@ -2833,6 +2999,8 @@ def _update_notifier_snapshot():
     esm_disabled = "expanded security maintenance for applications is not enabled" in text.lower()
     return {
         "available": True,
+        "os": os_info,
+        "update_supported": os_info["id"] in HOST_UPDATE_SUPPORTED_OS_IDS,
         "pending_count": pending,
         "security_count": security,
         "esm_enabled": not esm_disabled,
@@ -2877,6 +3045,18 @@ def _safe_maintenance_status():
     for key in ("available", "pending_count", "security_count", "security_detail", "deferred_count", "esm_enabled", "notice"):
         if key in raw:
             safe[key] = redact(str(raw[key]))[:240] if key == "security_detail" else raw[key]
+    if isinstance(raw.get("os"), dict):
+        os_value = raw["os"]
+        safe["os"] = {
+            "id": re.sub(r"[^a-z0-9._+-]", "", str(os_value.get("id") or "unknown").lower())[:40] or "unknown",
+            "name": re.sub(r"[\r\n]+", " ", str(os_value.get("name") or "Unknown OS"))[:80],
+            "pretty_name": re.sub(r"[\r\n]+", " ", str(os_value.get("pretty_name") or os_value.get("name") or "Unknown OS"))[:120],
+            "version_id": re.sub(r"[^a-zA-Z0-9._+-]", "", str(os_value.get("version_id") or ""))[:40],
+            "source": str(os_value.get("source") or "bridge")[:30],
+        }
+    for key in ("update_supported", "package_manager"):
+        if key in raw:
+            safe[key] = bool(raw[key]) if key == "update_supported" else re.sub(r"[^a-zA-Z0-9._+-]", "", str(raw[key]))[:40]
     for key in ("security_packages", "standard_packages", "deferred_packages"):
         values = raw.get(key)
         if isinstance(values, list):
@@ -2885,7 +3065,8 @@ def _safe_maintenance_status():
 
 
 def system_updates():
-    """Read host update status and maintenance progress; never runs apt itself."""
+    """Read host update status and maintenance progress; never runs a package manager."""
+    os_info = host_os()
     notifier = _update_notifier_snapshot()
     status = _safe_maintenance_status()
     packages = status.get("packages") or []
@@ -2899,6 +3080,8 @@ def system_updates():
             pending = None
     result = {
         "available": bool(status.get("available", notifier.get("available", False))),
+        "os": status.get("os") or notifier.get("os") or os_info,
+        "update_supported": bool(status.get("update_supported", notifier.get("update_supported", os_info["id"] in HOST_UPDATE_SUPPORTED_OS_IDS))),
         "checked_at": status.get("checked_at") or datetime.now(timezone.utc).isoformat(),
         "pending_count": pending if pending is not None else notifier.get("pending_count"),
         "security_count": status.get("security_count", notifier.get("security_count")),
@@ -2938,25 +3121,28 @@ def _queue_system_request(action: str, actor_id: str, actor_name: str, job_id: s
     if action not in {"apply_updates", "reboot"}:
         raise ValueError("Unsupported maintenance action")
     if not MAINTENANCE_DIR.is_dir() or not os.access(MAINTENANCE_DIR, os.W_OK):
-        raise RuntimeError("The guarded Ubuntu maintenance bridge is not installed")
+        raise RuntimeError("The guarded host maintenance bridge is not installed")
     existing_request = _read_json_file(SYSTEM_REQUEST_FILE)
     if existing_request:
-        raise RuntimeError("Another Ubuntu maintenance request is already queued")
+        raise RuntimeError("Another host maintenance request is already queued")
     snapshot = system_updates()
+    if not snapshot.get("update_supported", True):
+        os_name = (snapshot.get("os") or {}).get("pretty_name") or (snapshot.get("os") or {}).get("name") or "This operating system"
+        raise RuntimeError(f"{os_name} is detected, but the installed host bridge does not support package updates for it")
     phase = snapshot.get("phase", "idle")
     if action == "apply_updates":
         if phase in {"checking", "applying", "rebooting"}:
-            raise RuntimeError("Ubuntu maintenance is already in progress")
+            raise RuntimeError("Host maintenance is already in progress")
         if phase == "ready_for_reboot":
-            raise RuntimeError("Ubuntu updates are applied and are waiting for a confirmed restart")
+            raise RuntimeError("Host updates are applied and are waiting for a confirmed restart")
         pending = snapshot.get("pending_count")
         if pending is None or int(pending) <= 0:
-            raise RuntimeError("No pending Ubuntu updates were confirmed")
+            raise RuntimeError("No pending host updates were confirmed")
         selected_job_id = uuid.uuid4().hex[:24]
     else:
         selected_job_id = str(job_id or "")[:80]
         if phase != "ready_for_reboot" or not snapshot.get("reboot_required"):
-            raise RuntimeError("Ubuntu is not waiting for a confirmed restart")
+            raise RuntimeError("The host is not waiting for a confirmed restart")
         if not selected_job_id or not hmac.compare_digest(selected_job_id, str(snapshot.get("job_id") or "")):
             raise RuntimeError("The restart confirmation does not match the current update job")
     request = {
@@ -2975,7 +3161,7 @@ def _queue_system_request(action: str, actor_id: str, actor_name: str, job_id: s
         "accepted": True,
         "job_id": selected_job_id,
         "phase": "queued",
-        "detail": "Ubuntu updates queued; no restart will occur automatically" if action == "apply_updates" else "Restart queued after explicit confirmation",
+        "detail": "Host updates queued; no restart will occur automatically" if action == "apply_updates" else "Restart queued after explicit confirmation",
     }
 
 
@@ -3027,6 +3213,20 @@ def _queue_bot_release_request(action: str, actor_id: str, actor_name: str):
             "actor_name": sanitize_audit_value(actor_name),
             "requested_at": datetime.now(timezone.utc).isoformat(),
         }
+        # A local image pair is preferred. When it is unavailable, pass the
+        # exact earlier GitHub release metadata selected by the agent; the
+        # root bridge validates the repository, tag, URL and digest again
+        # before downloading anything.
+        if snapshot.get("github_rollback_available"):
+            rollback = snapshot.get("github_rollback") if isinstance(snapshot.get("github_rollback"), dict) else {}
+            request.update({
+                "repository": snapshot.get("repository"),
+                "tag": rollback.get("tag"),
+                "version": rollback.get("version"),
+                "asset_name": rollback.get("asset_name"),
+                "asset_url": rollback.get("asset_url"),
+                "asset_digest": rollback.get("asset_digest"),
+            })
     try:
         _write_maintenance_request(request)
     except OSError as exc:
@@ -3043,7 +3243,7 @@ def _queue_bot_release_request(action: str, actor_id: str, actor_name: str):
         "job_id": request["job_id"],
         "phase": "queued",
         "version": request.get("version") or snapshot.get("rollback_version"),
-        "detail": "Verified bot release queued; the host bridge will rebuild only the control containers" if action == "bot_update" else "Bot rollback queued; the host bridge will restore the previous control images",
+        "detail": "Verified bot release queued; the host bridge will rebuild only the control containers" if action == "bot_update" else "Bot rollback queued; the host bridge will restore the previous images or fetch the verified earlier GitHub release",
     }
 
 
@@ -3163,12 +3363,17 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/v1/control-policy":
             try:
                 body = self.json_body()
-                result = set_control_policy(
-                    str(body.get("key") or ""),
-                    body.get("enabled"),
-                    self.headers.get("X-Discord-User-ID", "unknown"),
-                    self.headers.get("X-Discord-User-Name", "unknown"),
-                )
+                actor_id = self.headers.get("X-Discord-User-ID", "unknown")
+                actor_name = self.headers.get("X-Discord-User-Name", "unknown")
+                if "mode" in body:
+                    result = set_control_mode(str(body.get("mode") or ""), actor_id, actor_name)
+                else:
+                    result = set_control_policy(
+                        str(body.get("key") or ""),
+                        body.get("enabled"),
+                        actor_id,
+                        actor_name,
+                    )
                 self.send_json(200, {"ok": True, "data": result})
             except PermissionError as exc:
                 self.send_json(403, {"ok": False, "error": str(exc)})
@@ -3190,7 +3395,7 @@ class Handler(BaseHTTPRequestHandler):
                     "actor_id": sanitize_audit_value(self.headers.get("X-Discord-User-ID")),
                     "actor_name": sanitize_audit_value(self.headers.get("X-Discord-User-Name")),
                     "action": "system_update",
-                    "service": "ubuntu",
+                    "service": (host_os().get("name") or "host")[:80],
                     "result": "queued",
                 })
                 self.send_json(200, {"ok": True, "data": result})
@@ -3214,7 +3419,7 @@ class Handler(BaseHTTPRequestHandler):
                     "actor_id": sanitize_audit_value(self.headers.get("X-Discord-User-ID")),
                     "actor_name": sanitize_audit_value(self.headers.get("X-Discord-User-Name")),
                     "action": "system_reboot",
-                    "service": "ubuntu",
+                    "service": (host_os().get("name") or "host")[:80],
                     "result": "queued",
                 })
                 self.send_json(200, {"ok": True, "data": result})

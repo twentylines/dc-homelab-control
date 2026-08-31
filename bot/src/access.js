@@ -1,6 +1,6 @@
 import { config } from './config.js';
 
-const READ_ONLY_COMMANDS = new Set(['panel', 'status', 'services', 'minecraft', 'media', 'storage', 'tasks', 'network', 'health', 'report', 'audit', 'updates']);
+const READ_ONLY_COMMANDS = new Set(['panel', 'status', 'services', 'minecraft', 'media', 'storage', 'tasks', 'network', 'controls', 'health', 'report', 'audit', 'updates', 'help', 'ping']);
 
 function hasRole(interaction, roleIds) {
   return roleIds.some((roleId) => interaction.member?.roles?.cache?.has(roleId));

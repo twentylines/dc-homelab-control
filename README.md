@@ -9,6 +9,18 @@ strongest on the combinations that are easiest to verify: Crafty plus a
 Jellyfin/Seerr/Sonarr/Radarr/Prowlarr/qBittorrent media stack, and ordinary
 Docker containers. Other integrations stay optional and quiet when absent.
 
+## Tested reference setup
+
+The reference deployment used for the release-candidate checks is Ubuntu
+Server 24.04 LTS on amd64 with Docker managed by Runtipi, a Jellyfin/Seerr
+media stack (including Sonarr, Radarr, Prowlarr and qBittorrent), Crafty
+Controller for Minecraft, and supporting AdGuard Home, Beszel, Scrutiny,
+Paperless-ngx, Syncthing and Uptime Kuma containers. The offline test suite
+also covers arm64-safe metadata, Docker-only discovery and API-shaped
+Pterodactyl/Pelican fixtures. Other dashboards and providers are detected only
+where their documented read-only path responds; they are not claimed as
+equally tested.
+
 ## What is included
 
 - Live host health, capacity, SMART results and useful host specifications.
@@ -28,12 +40,16 @@ Docker containers. Other integrations stay optional and quiet when absent.
 - Minecraft discovery/control through Crafty, API-compatible Pterodactyl or
   Pelican client panels, and a read-only Docker fallback for recognisable
   Minecraft images (Paper, Purpur, Fabric, Forge, Bedrock and similar).
-- Guarded Runtipi and Ubuntu maintenance workflows when the separately reviewed
-  host bridge is installed.
+- Guarded Runtipi and supported apt-family host maintenance workflows when the
+  separately reviewed host bridge is installed; the host OS is detected rather
+  than assumed to be Ubuntu.
 - GitHub release checks for the bot itself, with checksum-gated update and
   rollback controls through the root-owned host bridge.
 - Wake-on-LAN for arbitrary trusted devices with saved favourites.
-- Administrator and guest whitelists. Service controls are opt-in by default.
+- Administrator and guest whitelists. Service controls are opt-out by default:
+  detected containers are visible and controllable after administrator
+  confirmation unless protected or explicitly disabled. Set `opt-in` when you
+  want every container to start read-only.
 
 Absent software is not rendered as an error. A detected provider gets an
 actual container or endpoint check; an internal-only running container is
@@ -66,14 +82,17 @@ is the complete path from a fresh homelab to a tested public release:
    a secret manager. Use read-only upstream tokens where possible. Never put a
    real token, API key, webhook URL, private key, production endpoint or real
    host address in GitHub, an issue, a screenshot or a Discord message.
-3. **Start in read-only mode.** Run the compose/Runtipi install with
-   `SERVICE_CONTROL_MODE=opt-in`. The agent discovers Docker containers and
+3. **Start with the safe control policy.** The default is
+   `SERVICE_CONTROL_MODE=opt-out`: every detected container is visible, while
+   protected containers and explicit opt-outs remain read-only. Set
+   `SERVICE_CONTROL_MODE=opt-in` if you prefer to approve every container
+   before controls appear. The agent discovers Docker containers and
    configured providers; the bot renders only what is actually present and
    labels a requested media or network profile **Incomplete** when named
    components are missing.
 4. **Verify the useful paths.** In a private test guild, exercise `/panel`,
-   `/services`, `/tasks`, `/health`, `/media`, `/network`, `/minecraft` and
-   `/updates`. Check that guests can read status and use `/wake`, while only
+   `/services`, `/tasks`, `/health`, `/media`, `/network`, `/minecraft`,
+   `/help`, `/ping` and `/updates`. Check that guests can read status and use `/wake`, while only
    administrators can enable a service control or maintenance action. Confirm
    that absent integrations stay hidden and that failed upstream calls are
    reported as failures rather than successes.
@@ -87,9 +106,14 @@ is the complete path from a fresh homelab to a tested public release:
    configured GitHub repository and checksum; an administrator confirms the
    action; the bridge backs up the current pair, stages the exact release,
    rebuilds only `agent` and `bot`, waits for Docker and application health,
-   reports the measured latency, and keeps the previous pair for **Revert bot**.
-   Ubuntu package updates and host reboots are separate, explicitly confirmed
-   operations and are never triggered by a container update.
+   reports the measured latency, and keeps the previous pair for a version rollback.
+   When those local images have been pruned, the same button discovers the
+   highest earlier stable GitHub release with a verified archive digest and
+   fetches that exact version. It never accepts an arbitrary tag or an
+   unverified download.
+   Supported apt-family host package updates and host reboots are separate,
+   explicitly confirmed operations and are never triggered by a container
+   update.
 7. **Publish only what was tested.** Run the offline Python and Node test
    suites, review the support matrix, inspect the staged file list and perform
    a secret scan. Commit to the intended repository, create a version tag such
@@ -121,8 +145,9 @@ keys or unredacted logs.
    `config.env` from [`config.example.env`](config.example.env) and stops so
    you can fill in the required Discord values.
 4. Edit `config.env` with a text editor. Do not paste real tokens into Git or
-   issue trackers. Keep `SERVICE_CONTROL_MODE=opt-in` until you have reviewed
-   the detected containers.
+   issue trackers. The default `SERVICE_CONTROL_MODE=opt-out` keeps protected
+   or explicitly disabled containers read-only; use `opt-in` for a stricter
+   per-container approval workflow.
 5. Run `./scripts/install-compose.sh --check` to validate the values and
    Compose definition without starting anything.
 6. Run `./scripts/install-compose.sh` again. It builds the two images locally
@@ -171,9 +196,12 @@ Then edit `/etc/homelab-control/maintenance.env` and set the repository,
 Compose file, optional Compose environment file and project name. The bridge
 builds and recreates only the `agent` and `bot` services, retains the previous
 images, verifies both health checks, and automatically restores the previous
-images if the new release is not healthy. `/updates` exposes **Revert bot**
-while a previous verified image pair is retained. No update is automatic: an
-administrator must confirm it.
+images if the new release is not healthy. `/updates` exposes a version rollback
+while a previous verified image pair is retained. If the pair has been pruned,
+the button falls back to the highest earlier stable release listed by GitHub;
+the agent passes the exact tag, archive URL and digest to the bridge, which
+validates them again before downloading and building. No update or rollback is
+automatic: an administrator must confirm it.
 
 The worker rejects non-GitHub URLs, path traversal, symlinks, unexpected
 archive contents, checksum mismatches and releases from a different configured
@@ -190,9 +218,10 @@ root-owned files and the bridge configuration private.
 - `MINECRAFT_BACKEND=auto` prefers a configured Crafty, Pterodactyl or Pelican
   API and otherwise uses Docker discovery. Set `docker` for read-only Docker
   mode or `none` to hide Minecraft entirely.
-- `SERVICE_CONTROL_MODE=opt-in` keeps discovered containers read-only until an
-  administrator enables a specific control policy. Protected control-plane
-  containers cannot be enabled.
+- `SERVICE_CONTROL_MODE=opt-out` is the default: discovered containers are
+  controllable after administrator confirmation unless explicitly disabled;
+  protected control-plane containers can never be enabled. Set `opt-in` for a
+  strict approval-first policy.
 - API keys are read-only wherever the upstream service supports that scope.
   Webhooks and tokens are validated and are never included in embeds or audit
   output.
@@ -207,6 +236,7 @@ From the repository root:
 
 ```sh
 python3 -m unittest discover -s agent -p 'test_*.py' -v
+python3 -m unittest discover -s maintenance -p 'test_*.py' -v
 cd bot && CONTROL_TOKEN=0123456789abcdef0123456789abcdef \
   DISCORD_TOKEN=test-token DISCORD_CLIENT_ID=123456789012345678 \
   DISCORD_GUILD_ID=123456789012345678 DISCORD_OWNER_ID=123456789012345678 npm test

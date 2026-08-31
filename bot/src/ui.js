@@ -22,6 +22,43 @@ export function botName() {
   return cleanBrand(config.botName, 'Homelab Control');
 }
 
+function osInfo(data = {}) {
+  const value = data?.os || data?.operating_system || data?.host_os;
+  return value && typeof value === 'object' ? value : {};
+}
+
+export function operatingSystemLabel(data = {}, fallback = 'Host OS') {
+  const os = osInfo(data);
+  return cleanBrand(os.pretty_name || os.name || os.id, fallback);
+}
+
+export function operatingSystemShortLabel(data = {}, fallback = 'Host') {
+  const os = osInfo(data);
+  return cleanBrand(os.name || os.pretty_name || os.id, fallback);
+}
+
+export function operatingSystemIcon(data = {}) {
+  const id = String(osInfo(data).id || '').toLowerCase();
+  if (id === 'ubuntu') return '🐧';
+  if (id === 'debian' || id === 'linuxmint' || id === 'pop') return '🐧';
+  if (id.includes('freebsd') || id === 'openbsd') return '🖥️';
+  if (id === 'darwin' || id === 'macos') return '🍎';
+  if (id === 'windows') return '🪟';
+  return '🖥️';
+}
+
+export function backButton(target = 'panel', label = 'Back to panel') {
+  return new ButtonBuilder()
+    .setCustomId(`nav:${target}`)
+    .setLabel(label)
+    .setEmoji('⬅️')
+    .setStyle(ButtonStyle.Secondary);
+}
+
+export function backRow(target = 'panel', label = 'Back to panel') {
+  return [new ActionRowBuilder().addComponents(backButton(target, label))];
+}
+
 function commandTitle(data, title) {
   return `${serverName(data)} // ${title}`;
 }
@@ -77,6 +114,33 @@ export function base(title, description = '', footerNote = '') {
   const footer = compactFooter(footerNote);
   if (footer) embed.setFooter({ text: footer });
   return embed;
+}
+
+export function helpEmbed() {
+  return base(
+    `${botName()} // help`,
+    'A calm, read-first control surface for your homelab. Commands only show integrations and actions that are actually available on this host.',
+    'Read-only command guide · administrators confirm changes',
+  )
+    .setColor(colors.idle)
+    .addFields(
+      { name: 'Overview', value: '`/panel` command centre\n`/status` host snapshot\n`/health` concise diagnostic\n`/report` detailed health report\n`/ping` bot response timing', inline: true },
+      { name: 'Workloads', value: '`/tasks` live Docker resource view\n`/services` detected containers\n`/media` media providers and playback\n`/minecraft` server status and controls', inline: true },
+      { name: 'Operations', value: '`/storage` capacity, SMART and drives\n`/network` detected DNS/network providers\n`/updates` Runtipi, host and bot releases\n`/wake` Wake-on-LAN (saved favourites supported)', inline: true },
+      { name: 'Access', value: 'Guests can view read-only commands and use `/wake`. Administrators can confirm service, Minecraft, update and policy changes. `/controls` is opt-out by default: new containers are controllable unless protected or explicitly disabled.', inline: false },
+    );
+}
+
+export function pingEmbed({ processingMs, websocketMs } = {}) {
+  const processing = Number.isFinite(Number(processingMs)) ? `${Math.max(0, Math.round(Number(processingMs))).toLocaleString('en-GB')} ms` : 'not measured';
+  const gateway = Number.isFinite(Number(websocketMs)) && Number(websocketMs) >= 0
+    ? `${Math.round(Number(websocketMs)).toLocaleString('en-GB')} ms`
+    : 'not reported';
+  return base(
+    `${botName()} // ping`,
+    `🟢 **Response received**\nBot processing · **${processing}**\nDiscord gateway · **${gateway}**`,
+    'Measured locally when the command was handled · no host probe was performed',
+  ).setColor(colors.ok);
 }
 
 function memoryPercent(data) {
@@ -154,7 +218,9 @@ function lineChunks(lines, maximum = 1000) {
 }
 
 function mediaLine(item) {
-  const latency = Number.isFinite(Number(item.latency_ms)) ? ` · ${Math.round(Number(item.latency_ms))} ms` : '';
+  const latency = Number.isFinite(Number(item.latency_ms))
+    ? ` · ${item.probe_type ? `${safeUpdateText(item.probe_type, 30)} ` : ''}${Math.round(Number(item.latency_ms)).toLocaleString('en-GB')} ms`
+    : '';
   return `${item.online ? '🟢' : '🔴'} **${item.label}** — ${item.online ? `online${latency}` : 'unreachable'}`;
 }
 
@@ -195,6 +261,7 @@ export function statusEmbed(data) {
       { name: 'CPU', value: meter('Utilisation', data.cpu_percent, cpuDetail(data)), inline: true },
       { name: 'Memory', value: meter('Used', memoryPct, `${bytes(data.memory.used)} / ${bytes(data.memory.total)}`), inline: true },
       { name: 'Uptime', value: duration(data.uptime_seconds), inline: true },
+      { name: `${operatingSystemIcon(data)} Operating system`, value: operatingSystemLabel(data), inline: false },
       { name: 'Containers', value: `**${data.containers.running}/${data.containers.total}** running${data.containers.unhealthy.length ? `\nUnhealthy: ${data.containers.unhealthy.join(', ')}` : ''}`, inline: false },
     );
 }
@@ -212,6 +279,7 @@ export function panelEmbed(data, services, media, updates = null, mediaSummary =
       { name: 'Live now', value: `${meter('CPU', data.cpu_percent, cpuDetail(data))}\n\n${meter('Memory', memory, `${bytes(data.memory.used)} / ${bytes(data.memory.total)}`)}\n\n**Uptime** ${duration(data.uptime_seconds)}`, inline: true },
       { name: 'Fleet signal', value: `**Docker** ${data.containers.running}/${data.containers.total}\n**Tracked** ${trackedRunning}/${data.containers.tracked_total}${media.length ? `\n**Media** ${onlineMedia}/${media.length} reachable${mediaSummary?.assessed === true ? `\n${mediaSummary.complete ? '🟢 Complete' : '🟡 Incomplete'}` : ''}` : ''}`, inline: true },
       { name: 'Software', value: `**Runtipi** ${updateState}\nUse \`/updates\` for guarded one-at-a-time or update-all actions.`, inline: true },
+      { name: `${operatingSystemIcon(data)} Operating system`, value: operatingSystemLabel(data), inline: true },
       { name: 'Capacity', value: diskSummary(data), inline: false },
       { name: 'Control shortcuts', value: '`/health` diagnostic\n`/report` detailed report\n`/tasks` Docker RAM/CPU breakdown\n`/services` service controls\n`/minecraft` Minecraft controls\n`/storage` capacity + SMART\n`/wake mac:...` Wake-on-LAN', inline: true },
       { name: 'Next best action', value: result.issues[0] ? `⚠️ ${result.issues[0]}` : result.recommendations[0] ? `💡 ${result.recommendations[0]}` : '✅ No action needed right now.', inline: true },
@@ -240,6 +308,12 @@ function safeUpdateText(value, maximum = 180) {
   return String(value || 'Unknown').replace(/[\\`*_~|\r\n@]/g, '').slice(0, maximum);
 }
 
+function rollbackActionLabel(version) {
+  if (!version) return 'Revert version';
+  const cleanVersion = safeUpdateText(version, 20).replace(/^v/i, '');
+  return cleanVersion && cleanVersion !== 'Unknown' ? `Revert to v${cleanVersion}` : 'Revert version';
+}
+
 function updateVersionLine(update) {
   const current = safeUpdateText(update.current || 'unknown', 50);
   const latest = safeUpdateText(update.latest || 'unknown', 70);
@@ -251,12 +325,25 @@ function botReleasePhase(release) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function botRollbackLine(release) {
+  if (!release?.rollback_available) return null;
+  const source = release.rollback_source === 'github'
+    ? 'from GitHub'
+    : release.github_rollback_available
+      ? 'retained locally · GitHub fallback ready'
+      : 'retained locally';
+  return `↩️ Revert available · ${safeUpdateText(release.rollback_version || 'previous version', 40)} · ${source}`;
+}
+
 export function botReleaseSummary(release) {
   if (!release?.configured) {
     return `⚪ **Release checks not configured**\n${safeUpdateText(release?.detail || 'Set HOMELAB_CONTROL_REPOSITORY to enable checks.', 280)}`;
   }
   if (release.available === false) {
-    return `🟡 **GitHub check unavailable**\n${safeUpdateText(release.detail || 'GitHub did not return release metadata.', 280)}`;
+    const lines = [`🟡 **GitHub check unavailable**`, safeUpdateText(release.detail || 'GitHub did not return release metadata.', 280)];
+    const rollbackLine = botRollbackLine(release);
+    if (rollbackLine) lines.push(rollbackLine);
+    return lines.join('\n').slice(0, 1024);
   }
   const current = safeUpdateText(release.current || 'unknown', 40);
   const latest = safeUpdateText(release.latest || current, 40);
@@ -269,7 +356,11 @@ export function botReleaseSummary(release) {
   if (release.update_available && !release.asset_verified) lines.push('🔒 Update held · the release archive has no verified SHA-256 digest');
   else if (release.update_available && !release.update_supported) lines.push('🔒 Update held · the guarded host release bridge is not configured');
   else if (release.update_available && !active) lines.push('✅ Verified archive ready to install');
-  if (release.rollback_available) lines.push(`↩️ Rollback available · ${safeUpdateText(release.rollback_version || 'previous version', 40)}`);
+  const rollbackLine = botRollbackLine(release);
+  if (rollbackLine) lines.push(rollbackLine);
+  else if (release.github_rollback_detail) {
+    lines.push(`↩️ GitHub revert unavailable · ${safeUpdateText(release.github_rollback_detail, 220)}`);
+  }
   if (release.detail && !/latest stable release|newer verified release is ready/i.test(String(release.detail))) {
     lines.push(safeUpdateText(release.detail, 280));
   }
@@ -277,8 +368,13 @@ export function botReleaseSummary(release) {
 }
 
 export function hostUpdateSummary(snapshot) {
+  const hasOs = Object.keys(osInfo(snapshot)).length > 0;
+  // Older bridge snapshots predate the OS field and are known to be Ubuntu
+  // snapshots. New snapshots always carry an explicit identity.
+  const osLabel = operatingSystemLabel(snapshot, hasOs ? 'Host operating system' : 'Ubuntu');
+  const osShort = operatingSystemShortLabel(snapshot, hasOs ? 'Host' : 'Ubuntu');
   if (!snapshot || snapshot.available === false) {
-    return `⚪ Ubuntu update check unavailable\n${safeUpdateText(snapshot?.detail || 'The host did not return update status.', 260)}`;
+    return `⚪ **${osLabel}** update check unavailable\n${safeUpdateText(snapshot?.detail || 'The host did not return update status.', 260)}`;
   }
   const pending = snapshot.pending_count == null ? 'unknown' : Number(snapshot.pending_count).toLocaleString('en-GB');
   const packages = Array.isArray(snapshot.packages) ? snapshot.packages : [];
@@ -290,16 +386,17 @@ export function hostUpdateSummary(snapshot) {
     : `${Number(inferredSecurity).toLocaleString('en-GB')} update${Number(inferredSecurity) === 1 ? '' : 's'}`;
   const phase = safeUpdateText(String(snapshot.phase || 'idle').replace(/_/g, ' '), 40);
   const phaseLabel = phase.replace(/\b\w/g, (letter) => letter.toUpperCase());
-  const esmNotice = /expanded security maintenance for applications|esm apps/i.test(String(snapshot.notice || ''));
+  const isUbuntu = !hasOs || String(osInfo(snapshot).id || '').toLowerCase() === 'ubuntu' || /ubuntu/i.test(osLabel);
+  const esmNotice = isUbuntu && /expanded security maintenance for applications|esm apps/i.test(String(snapshot.notice || ''));
   const statusIcon = ['checking', 'applying', 'rebooting'].includes(snapshot.phase) ? '🟣' : snapshot.phase === 'failed' ? '🔴' : snapshot.pending_count > 0 ? '🟡' : '🟢';
   const lines = [
     `${statusIcon} **${pending} pending**`,
     `**Security** · ${security}`,
     `**Phase** · ${phaseLabel}${snapshot.reboot_required ? ' · **restart required**' : ''}`,
   ];
-  if (snapshot.esm_enabled === false || esmNotice) {
+  if (isUbuntu && (snapshot.esm_enabled === false || esmNotice)) {
     lines.push('ℹ️ **Ubuntu Pro / ESM Apps** · optional · not enabled');
-  } else if (snapshot.esm_enabled === true) {
+  } else if (isUbuntu && snapshot.esm_enabled === true) {
     lines.push('🛡️ **Ubuntu Pro / ESM Apps** · enabled');
   }
   if (snapshot.security_detail) lines.push(`🔐 **Security detail** · ${safeUpdateText(snapshot.security_detail, 220)}`);
@@ -314,11 +411,16 @@ export function hostUpdateSummary(snapshot) {
     lines.push(`**Planned packages**\n${packageLines}`.slice(0, 760));
   }
   const deferred = Array.isArray(snapshot.deferred_packages) ? snapshot.deferred_packages : [];
-  if (deferred.length) lines.push(`⏸️ **Deferred by Ubuntu phasing** · ${deferred.map((name) => safeUpdateText(name, 54)).join(', ').slice(0, 360)}`);
+  if (deferred.length) lines.push(`⏸️ **Deferred by ${osShort} phasing** · ${deferred.map((name) => safeUpdateText(name, 54)).join(', ').slice(0, 360)}`);
   if (snapshot.notice && !esmNotice) lines.push(`ℹ️ ${safeUpdateText(snapshot.notice, 220)}`);
   if (!snapshot.maintenance_available) lines.push('🔒 Admin maintenance actions are not installed on the host.');
   if (snapshot.detail) lines.push(safeUpdateText(snapshot.detail, 240));
   return lines.join('\n').slice(0, 1024);
+}
+
+function hostUpdateFieldName(snapshot, suffix = 'host') {
+  const hasOs = Object.keys(osInfo(snapshot)).length > 0;
+  return `${hasOs ? operatingSystemIcon(snapshot) : '🐧'} ${operatingSystemLabel(snapshot, hasOs ? 'Host' : 'Ubuntu')} ${suffix}`.slice(0, 256);
 }
 
 export function updatesEmbed(snapshot, systemUpdates = null) {
@@ -328,7 +430,7 @@ export function updatesEmbed(snapshot, systemUpdates = null) {
       `🟡 **Update checks unavailable**\n${safeUpdateText(snapshot?.detail || 'Runtipi did not return an update status.')}`,
       'No update attempted · restore Runtipi connection, then refresh',
     ).setColor(colors.warn);
-    if (systemUpdates) unavailable.addFields({ name: '🐧 Ubuntu host', value: hostUpdateSummary(systemUpdates), inline: false });
+    if (systemUpdates) unavailable.addFields({ name: hostUpdateFieldName(systemUpdates), value: hostUpdateSummary(systemUpdates), inline: false });
     if (snapshot?.bot) unavailable.addFields({ name: '🤖 Homelab Control release', value: botReleaseSummary(snapshot.bot), inline: false });
     return unavailable;
   }
@@ -348,7 +450,7 @@ export function updatesEmbed(snapshot, systemUpdates = null) {
       { name: `Available updates · ${updates.length}`, value: lines, inline: false },
       { name: 'Protected scope', value: protectedLine, inline: false },
     );
-  if (systemUpdates) embed.addFields({ name: '🐧 Ubuntu host', value: hostUpdateSummary(systemUpdates), inline: false });
+  if (systemUpdates) embed.addFields({ name: hostUpdateFieldName(systemUpdates), value: hostUpdateSummary(systemUpdates), inline: false });
   if (snapshot.bot) embed.addFields({ name: '🤖 Homelab Control release', value: botReleaseSummary(snapshot.bot), inline: false });
   return embed;
 }
@@ -362,8 +464,9 @@ export function updatesRows(snapshot, systemOrAllow = null, actions = true) {
   }
   const rows = [new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('updates:refresh').setLabel('Refresh').setEmoji('🔄').setStyle(ButtonStyle.Primary),
+    backButton('panel'),
   )];
-  if (allowActions && systemUpdates?.maintenance_available) {
+  if (allowActions && systemUpdates?.maintenance_available && systemUpdates?.update_supported !== false) {
     const active = ['checking', 'applying', 'rebooting'].includes(systemUpdates.phase);
     if (systemUpdates.phase === 'ready_for_reboot') {
       rows.push(new ActionRowBuilder().addComponents(
@@ -371,7 +474,7 @@ export function updatesRows(snapshot, systemOrAllow = null, actions = true) {
       ));
     } else if (!active && Number(systemUpdates.pending_count) > 0) {
       rows.push(new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('updates:system-apply').setLabel('Apply Ubuntu updates').setEmoji('🐧').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('updates:system-apply').setLabel(`Apply ${operatingSystemShortLabel(systemUpdates, 'host')} updates`).setEmoji(operatingSystemIcon(systemUpdates)).setStyle(ButtonStyle.Success),
       ));
     }
   }
@@ -381,7 +484,7 @@ export function updatesRows(snapshot, systemOrAllow = null, actions = true) {
     botActions.push(new ButtonBuilder().setCustomId('updates:bot-update').setLabel(`Update bot · ${safeUpdateText(botRelease.latest || 'latest', 24)}`).setEmoji('🤖').setStyle(ButtonStyle.Success));
   }
   if (allowActions && botRelease?.rollback_available && botRelease.update_supported) {
-    botActions.push(new ButtonBuilder().setCustomId('updates:bot-rollback').setLabel(`Revert bot${botRelease.rollback_version ? ` · ${safeUpdateText(botRelease.rollback_version, 20)}` : ''}`).setEmoji('↩️').setStyle(ButtonStyle.Secondary));
+    botActions.push(new ButtonBuilder().setCustomId('updates:bot-rollback').setLabel(rollbackActionLabel(botRelease.rollback_version)).setEmoji('↩️').setStyle(ButtonStyle.Secondary));
   }
   if (botActions.length) rows.push(new ActionRowBuilder().addComponents(botActions));
   const updates = Array.isArray(snapshot?.updates) ? snapshot.updates : [];
@@ -414,10 +517,11 @@ export function systemUpdateLoadingEmbed(snapshot, tick = 0) {
   const dots = '.'.repeat((tickValue % 3) + 1);
   const phase = snapshot?.phase || 'queued';
   const phaseLabel = safeUpdateText(phase, 40).replace(/_/g, ' ');
+  const osLabel = operatingSystemShortLabel(snapshot, Object.keys(osInfo(snapshot)).length ? 'host' : 'Ubuntu');
   return base(
-    'Ubuntu // guarded maintenance',
+    `${osLabel} // guarded maintenance`,
     `${glyph} **${phaseLabel}${dots}**\n⏳ The guarded host bridge is processing the confirmed request.\nNo automatic restart will be performed.`,
-    'Ubuntu maintenance · configuration kept · restart requires confirmation',
+    `${osLabel} maintenance · configuration kept · restart requires confirmation`,
   )
     .setColor(colors.idle)
     .addFields(
@@ -431,8 +535,9 @@ export function systemUpdateResultEmbed(snapshot) {
   const complete = phase === 'complete';
   const waiting = phase === 'ready_for_reboot';
   const failed = phase === 'failed';
+  const osLabel = operatingSystemShortLabel(snapshot, Object.keys(osInfo(snapshot)).length ? 'Host' : 'Ubuntu');
   const icon = complete ? '🟢' : waiting ? '🟡' : failed ? '🔴' : '🟣';
-  const headline = complete ? 'Ubuntu updates applied' : waiting ? 'Ubuntu updates applied — restart pending' : failed ? 'Ubuntu update failed' : `Ubuntu maintenance ${safeUpdateText(phase, 40)}`;
+  const headline = complete ? `${osLabel} updates applied` : waiting ? `${osLabel} updates applied — restart pending` : failed ? `${osLabel} update failed` : `${osLabel} maintenance ${safeUpdateText(phase, 40)}`;
   const lines = [
     `${icon} **${headline}**`,
     `${snapshot?.pending_count == null ? 'Pending count unknown' : `${snapshot.pending_count} pending`} · ${snapshot?.security_count == null ? 'security count unknown' : `${snapshot.security_count} security`}`,
@@ -441,9 +546,9 @@ export function systemUpdateResultEmbed(snapshot) {
   if (snapshot?.notice) lines.push(`⚠️ ${safeUpdateText(snapshot.notice, 220)}`);
   if (snapshot?.detail) lines.push(safeUpdateText(snapshot.detail, 240));
   return base(
-    'Ubuntu // maintenance result',
+    `${osLabel} // maintenance result`,
     lines.join('\n'),
-    snapshot?.reboot_required ? 'Ubuntu update result · restart is separate' : 'Ubuntu update result · no automatic restart',
+    snapshot?.reboot_required ? `${osLabel} update result · restart is separate` : `${osLabel} update result · no automatic restart`,
   )
     .setColor(complete ? colors.ok : failed ? colors.bad : colors.warn)
     .addFields({ name: 'Recent activity', value: maintenanceEventLines(snapshot), inline: false });
@@ -479,7 +584,7 @@ export function botReleaseLoadingEmbed(action, release, tick = 0) {
   const dots = '.'.repeat((tickValue % 3) + 1);
   const phase = String(release?.phase || 'queued').toLowerCase();
   const stage = botReleaseStages[phase] || `Host bridge phase: ${phase.replace(/_/g, ' ')}`;
-  const target = release?.latest || release?.rollback_version || 'selected release';
+  const target = release?.latest || release?.requested_version || release?.rollback_version || release?.version || 'selected release';
   const events = Array.isArray(release?.events) && release.events.length
     ? release.events.slice(-5).map((event) => `• ${safeUpdateText(event.message, 180)}`).join('\n')
     : 'Waiting for the host bridge to report its first step…';
@@ -498,6 +603,9 @@ export function botReleaseResultEmbed(action, release) {
   const headline = phase === 'rolled_back' ? 'Previous bot release restored' : phase === 'complete' ? 'Bot update verified' : 'Bot update stopped safely';
   const version = release?.current || release?.latest || release?.rollback_version || 'unknown';
   const lines = [`${icon} **${headline}**`, `Running version · **${safeUpdateText(version, 60)}**`];
+  if (action === 'rollback' && release?.rollback_source) {
+    lines.push(`Rollback source · **${release.rollback_source === 'github' ? 'GitHub archive' : 'retained local images'}**`);
+  }
   if (release?.previous_version) lines.push(`Previous version · ${safeUpdateText(release.previous_version, 60)}`);
   if (release?.detail) lines.push(safeUpdateText(release.detail, 320));
   const events = Array.isArray(release?.events) && release.events.length
@@ -575,6 +683,7 @@ export function updateResultEmbed(result) {
 export function updateResultRows() {
   return [new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('updates:back').setLabel('Back to updates').setEmoji('⬅️').setStyle(ButtonStyle.Secondary),
+    backButton('panel'),
   )];
 }
 
@@ -635,10 +744,10 @@ export function reportEmbeds(data, services, media, audit, systemUpdates = null,
     .addFields(
       { name: '⚙️ System telemetry', value: `${meter('CPU', data.cpu_percent, cpuDetail(data, true))}\n\n${meter('Memory', memory, `${bytes(data.memory.used)} / ${bytes(data.memory.total)}`)}`, inline: true },
       { name: '⏱️ Runtime', value: `**Docker** ${data.containers.running}/${data.containers.total} running\n**Tracked** ${data.containers.tracked_running}/${data.containers.tracked_total} running\n**Swap** ${swap}\n**Uptime** ${duration(data.uptime_seconds)}\n**Captured** <t:${Math.floor(new Date(data.timestamp).getTime() / 1000)}:R>`, inline: true },
-      { name: '🧾 Host specifications', value: `**CPU** ${data.specs?.cpu_model || 'Unknown'}\n**Frequency** ${frequency(data)}\n**Cores** ${data.specs?.logical_cores || '—'} logical • **Architecture** ${data.specs?.architecture || '—'}\n**RAM** ${bytes(data.memory.total)} • **Speed** ${memorySpeed(data)}\n**Kernel** ${data.specs?.kernel || 'Unknown'}\n**Node** ${data.hostname}`, inline: false },
+      { name: '🧾 Host specifications', value: `**OS** ${operatingSystemLabel(data)}\n**CPU** ${data.specs?.cpu_model || 'Unknown'}\n**Frequency** ${frequency(data)}\n**Cores** ${data.specs?.logical_cores || '—'} logical • **Architecture** ${data.specs?.architecture || '—'}\n**RAM** ${bytes(data.memory.total)} • **Speed** ${memorySpeed(data)}\n**Kernel** ${data.specs?.kernel || 'Unknown'}\n**Node** ${data.hostname}`, inline: false },
       { name: '💾 Storage', value: diskSummary(data), inline: false },
       { name: '🩺 SMART / drive health', value: driveSummary(data), inline: false },
-      ...(systemUpdates ? [{ name: '🐧 Ubuntu update status', value: hostUpdateSummary(systemUpdates), inline: false }] : []),
+      ...(systemUpdates ? [{ name: hostUpdateFieldName(systemUpdates, 'update status'), value: hostUpdateSummary(systemUpdates), inline: false }] : []),
       { name: '⚠️ Assessment', value: [...result.issues.map((item) => `• ${item}`), ...result.recommendations.map((item) => `• ${item}`)].join('\n').slice(0, 1024) || '✅ No warnings or recommendations.', inline: false },
     );
   const operations = base(commandTitle(data, 'operations detail'), 'The services and endpoints that make up the home stack.', 'Service and media health detail')
@@ -677,7 +786,9 @@ export function servicesEmbed(services) {
 
 function providerLine(provider) {
   const healthy = provider.online === true;
-  const latency = Number.isFinite(Number(provider.latency_ms)) ? ` · ${Math.round(Number(provider.latency_ms))} ms` : '';
+  const latency = Number.isFinite(Number(provider.latency_ms))
+    ? ` · ${safeUpdateText(provider.probe_type || 'TCP connect', 30)} ${Math.round(Number(provider.latency_ms)).toLocaleString('en-GB')} ms`
+    : '';
   const detail = provider.detail && provider.detail !== 'endpoint reachable' ? ` · ${provider.detail}` : '';
   return `${healthy ? '🟢' : '🔴'} **${safeUpdateText(provider.label || provider.id || 'Provider', 80)}** · ${healthy ? 'online' : 'unreachable'}${latency}${detail}`;
 }
@@ -696,14 +807,14 @@ export function networkEmbed(providers, summary = null, hostStatus = {}) {
   const rows = Array.isArray(providers) ? providers : [];
   if (!rows.length) {
     const status = networkStackStatus(summary);
-    return base(commandTitle(hostStatus, 'network'), `No DNS or network services were detected.${status ? `\n\n${status}` : ''}`, 'Auto-detected network providers · read-only checks').setColor(summary?.assessed && !summary.complete ? colors.warn : colors.idle);
+    return base(commandTitle(hostStatus, 'network'), `No DNS or network services were detected.${status ? `\n\n${status}` : ''}`, 'Auto-detected providers · TCP timings are endpoint checks · read-only').setColor(summary?.assessed && !summary.complete ? colors.warn : colors.idle);
   }
   const online = rows.filter((provider) => provider.online).length;
   const lines = rows.map(providerLine).join('\n');
   const containers = rows.map((provider) => provider.container).filter(Boolean);
   const completeness = networkStackStatus(summary);
   const description = `${online === rows.length ? '🟢' : '🔴'} **${online}/${rows.length} detected providers online**${completeness ? `\n${completeness}` : ''}\n${lines}`;
-  return base(commandTitle(hostStatus, 'network'), description, 'Auto-detected network providers · read-only checks')
+  return base(commandTitle(hostStatus, 'network'), description, 'Auto-detected providers · TCP timings are endpoint checks · read-only')
     .setColor(summary?.assessed && !summary.complete ? colors.warn : online === rows.length ? colors.ok : colors.bad)
     .addFields({ name: 'Detected services', value: containers.length ? containers.map((container) => `• ${safeUpdateText(container, 90)}`).join('\n').slice(0, 1024) : 'External provider endpoint', inline: false });
 }
@@ -713,12 +824,13 @@ export function controlsEmbed(services, policy = {}, options = {}) {
   const entries = source.filter((service) => service && service.key);
   const enabled = entries.filter((service) => service.enabled ?? service.manageable).length;
   const protectedCount = entries.filter((service) => service.protected).length;
-  const mode = policy.mode || config.serviceControlMode || 'opt-in';
+  const mode = policy.mode || config.serviceControlMode || 'opt-out';
+  const allowActions = options.allowActions !== false;
   const selectedKey = options.selectedKey || options.key;
   const selected = options.detail
     ? selectedKey ? entries.find((service) => service.key === selectedKey) || null : entries.length === 1 ? entries[0] : null
     : null;
-  const pageSize = 100;
+  const pageSize = 75;
   const pageCount = Math.max(1, Math.ceil(entries.length / pageSize));
   const page = Math.min(pageCount - 1, Math.max(0, Number(options.page) || 0));
   const pageStart = page * pageSize;
@@ -727,8 +839,8 @@ export function controlsEmbed(services, policy = {}, options = {}) {
     ? `\nPage **${page + 1}/${pageCount}** · showing ${pageStart + 1}–${Math.min(pageStart + pageSize, entries.length)} of ${entries.length}`
     : '';
   const description = selected
-    ? `${selected.protected ? '🛡️' : (selected.enabled ? '🟢' : '⚪')} **${safeUpdateText(selected.label, 100)}**\n${selected.container ? `Container: ${safeUpdateText(selected.container, 140)}\n` : ''}${selected.protected ? 'This container is protected and cannot be controlled remotely.' : selected.enabled ? 'Administrator controls are enabled for this container.' : 'Read-only until an administrator enables controls.'}`
-    : `${mode === 'opt-in' ? '🛡️' : '⚡'} **${mode === 'opt-in' ? 'Opt-in controls' : 'Opt-out controls'}**\n**${enabled}/${entries.length}** detected containers currently controllable${protectedCount ? ` · ${protectedCount} protected` : ''}${pageNote}`;
+    ? `${selected.protected ? '🛡️' : (selected.enabled ? '🟢' : '⚪')} **${safeUpdateText(selected.label, 100)}**\n${selected.container ? `Container: ${safeUpdateText(selected.container, 140)}\n` : ''}${selected.protected ? 'This container is protected and cannot be controlled remotely.' : selected.enabled ? 'Controls are enabled for this container.' : 'This container is Read-only until an administrator enables it.'}${allowActions ? '' : '\n\n🔒 Guest view · only administrators can change this policy.'}`
+    : `${mode === 'opt-in' ? '🛡️' : '⚡'} **${mode === 'opt-in' ? 'Opt-in controls' : 'Opt-out controls (recommended)'}**\n**${enabled}/${entries.length}** detected containers currently controllable${protectedCount ? ` · ${protectedCount} protected` : ''}\n${safeUpdateText(policy.mode_description || (mode === 'opt-out' ? 'New containers are controllable by default. Select a container below to switch its controls off; protected control-plane containers always stay read-only.' : 'New containers are read-only by default. Select a container below to enable its controls one at a time.'), 420)}\n${allowActions ? 'Select a container below to review or change its policy.' : 'Guest view is read-only; only administrators can change policies.'}${pageNote}`;
   const lines = selected ? [] : pageEntries.map((service) => {
     const active = service.enabled ?? service.manageable;
     const icon = service.protected ? '🛡️' : active ? '🟢' : '⚪';
@@ -737,7 +849,7 @@ export function controlsEmbed(services, policy = {}, options = {}) {
   });
   const remaining = entries.length - (pageStart + pageEntries.length);
   if (!selected && remaining > 0) lines.push(`… ${remaining} more · use Next page below`);
-  const embed = base(commandTitle({}, 'container controls'), description, 'Administrator-only policy · explicit confirmation still required')
+  const embed = base(commandTitle({}, 'container controls'), description, allowActions ? 'Administrator policy · explicit confirmation still required' : 'Read-only guest view · administrator policy changes are hidden')
     .setColor(selected?.protected ? colors.idle : selected?.enabled ? colors.ok : colors.warn);
   if (lines.length) embed.addFields({ name: 'Detected containers', value: lines.join('\n').slice(0, 1024), inline: false });
   if (!selected && !entries.length) embed.setDescription(`${mode === 'opt-in' ? '🛡️' : '⚡'} **${mode === 'opt-in' ? 'Opt-in controls' : 'Opt-out controls'}**\nNo containers were detected yet.`);
@@ -751,13 +863,13 @@ export function controlsRows(services, policy = {}, options = {}) {
   const service = options.detail
     ? selectedKey ? entries.find((item) => item?.key === selectedKey) || null : entries.length === 1 ? entries[0] : null
     : null;
-  const pageSize = 100;
+  const pageSize = 75;
   const pageCount = Math.max(1, Math.ceil(entries.length / pageSize));
   const page = Math.min(pageCount - 1, Math.max(0, Number(options.page) || 0));
   if (service) {
     const backId = page > 0 ? `control:back:${page + 1}` : 'control:back';
     const buttons = [new ButtonBuilder().setCustomId(backId).setLabel('Back to controls').setEmoji('⬅️').setStyle(ButtonStyle.Secondary)];
-    if (!service.protected) {
+    if (options.allowActions !== false && !service.protected) {
       const active = service.enabled ?? service.manageable;
       buttons.unshift(new ButtonBuilder().setCustomId(`control-toggle:${service.key}:${active ? 'off' : 'on'}`).setLabel(active ? 'Disable controls' : 'Enable controls').setEmoji(active ? '⏸️' : '✅').setStyle(active ? ButtonStyle.Danger : ButtonStyle.Success));
     }
@@ -765,23 +877,34 @@ export function controlsRows(services, policy = {}, options = {}) {
   }
   const pageStart = page * pageSize;
   const pageEntries = entries.slice(pageStart, pageStart + pageSize);
-  const navigation = [new ButtonBuilder().setCustomId(`controls:refresh:${page + 1}`).setLabel('Refresh').setEmoji('🔄').setStyle(ButtonStyle.Primary)];
+  const navigation = [new ButtonBuilder().setCustomId(`controls:refresh:${page + 1}`).setLabel('Refresh').setEmoji('🔄').setStyle(ButtonStyle.Primary), backButton('panel')];
   if (page > 0) navigation.push(new ButtonBuilder().setCustomId(`controls:page:${page}`).setLabel('Previous').setEmoji('⬅️').setStyle(ButtonStyle.Secondary));
   if (page < pageCount - 1) navigation.push(new ButtonBuilder().setCustomId(`controls:page:${page + 2}`).setLabel('Next').setEmoji('➡️').setStyle(ButtonStyle.Secondary));
   const rows = [new ActionRowBuilder().addComponents(navigation)];
+  if (options.allowActions !== false) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId('controls:mode')
+        .setPlaceholder(`Control mode · ${policy.mode === 'opt-in' ? 'opt-in' : 'opt-out'}`)
+        .addOptions([
+          { label: 'Opt-out · automatic controls', value: 'opt-out', description: 'Detected containers are enabled unless you switch one off' },
+          { label: 'Opt-in · strict review', value: 'opt-in', description: 'Detected containers stay read-only until enabled' },
+        ]),
+    ));
+  }
   const optionsList = pageEntries.map((service) => {
     const active = service.enabled ?? service.manageable;
     return {
       label: safeUpdateText(service.label || service.key, 100),
       value: safeUpdateText(service.key, 100),
-      description: `${service.protected ? 'Protected' : active ? 'Controls enabled' : 'Read-only · choose to enable'}`.slice(0, 100),
+      description: `${service.protected ? 'Protected · cannot be changed' : active ? (policy.mode === 'opt-out' && service.override !== false ? 'Enabled by default · select to disable' : 'Controls enabled') : policy.mode === 'opt-out' ? 'Disabled by administrator' : 'Read-only · select to enable'}`.slice(0, 100),
     };
   });
   for (let index = 0; index < optionsList.length; index += 25) {
     rows.push(new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId(`control:select:${page + 1}:${Math.floor(index / 25) + 1}`)
-        .setPlaceholder(optionsList.length > 25 ? `Choose a policy (${pageStart + index + 1}–${Math.min(pageStart + index + 25, entries.length)})` : 'Choose a container policy')
+        .setPlaceholder(optionsList.length > 25 ? `Review containers (${pageStart + index + 1}–${Math.min(pageStart + index + 25, entries.length)})` : 'Review a container policy')
         .addOptions(optionsList.slice(index, index + 25)),
     ));
   }
@@ -977,6 +1100,7 @@ export function tasksRows(snapshot, live = false) {
   const rows = [new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('tasks:refresh').setLabel('Refresh').setEmoji('🔄').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(live ? 'tasks:stop' : 'tasks:live').setLabel(live ? 'Stop live' : 'Live 1 min').setEmoji(live ? '⏹️' : '🟣').setStyle(live ? ButtonStyle.Danger : ButtonStyle.Secondary),
+    backButton('panel'),
   )];
   const containers = Array.isArray(snapshot?.containers) ? [...snapshot.containers] : [];
   const discordBot = snapshot?.discord_bot;
@@ -1198,8 +1322,8 @@ export function minecraftEmbed(servers) {
   return base('Minecraft fleet', `📊 **${online}/${servers.length} online**${backendLine}\n\n${lines.join('\n\n')}`.slice(0, 4096), 'Auto-detected Minecraft backends · resource samples are read-only').setColor(online ? colors.ok : colors.idle);
 }
 
-export function panelRows() {
-  return [new ActionRowBuilder().addComponents(
+export function panelRows(withBack = false) {
+  const rows = [new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('nav:status').setLabel('Refresh').setEmoji('🔄').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('nav:services').setLabel('Services').setEmoji('🧩').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('nav:minecraft').setLabel('Minecraft').setEmoji('⛏️').setStyle(ButtonStyle.Secondary),
@@ -1211,16 +1335,18 @@ export function panelRows() {
     new ButtonBuilder().setCustomId('nav:updates').setLabel('Updates').setEmoji('⬆️').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('nav:controls').setLabel('Controls').setEmoji('🛡️').setStyle(ButtonStyle.Secondary),
   )];
+  if (withBack) rows.push(...backRow('panel'));
+  return rows;
 }
 
 export function serviceRows(services) {
   const options = services.filter((s) => s.container).map((s) => ({
     label: s.label.slice(0, 100), value: s.key, description: `${s.state} • ${serviceHealth(s)}${s.discovered ? ' • auto-detected' : s.manageable ? ' • manageable' : ' • protected'}`.slice(0, 100),
   }));
-  if (!options.length) return [];
+  if (!options.length) return backRow('panel');
   // Discord permits at most 25 options per select. Split the live catalogue
   // into additional rows so a larger Docker host remains fully navigable.
-  const rows = [];
+  const rows = [...backRow('panel')];
   for (let index = 0; index < options.length; index += 25) {
     const chunk = options.slice(index, index + 25);
     const number = Math.floor(index / 25) + 1;
@@ -1235,7 +1361,7 @@ export function serviceRows(services) {
 }
 
 export function minecraftRows(servers) {
-  if (!servers.length) return [];
+  if (!servers.length) return backRow('panel');
   const options = servers.slice(0, 125).map((server) => {
     const resources = server.resources || {};
     const sample = Number.isFinite(Number(resources.cpu_percent)) && Number.isFinite(Number(resources.memory_used))
@@ -1247,7 +1373,7 @@ export function minecraftRows(servers) {
       description: `${server.running ? 'Online' : 'Offline'}${sample}`.slice(0, 100),
     };
   });
-  const rows = [];
+  const rows = [...backRow('panel')];
   for (let index = 0; index < options.length; index += 25) {
     rows.push(new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()

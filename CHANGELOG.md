@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased (next release)
+
+1. Added verified GitHub rollback discovery: `/updates` now finds the highest
+   earlier stable release when retained local control images are unavailable.
+2. Kept rollback guarded end to end: the agent selects the exact repository,
+   tag, archive and SHA-256 digest, while the root bridge validates them again,
+   rejects unsafe archives, rebuilds only the control agent and bot, and checks
+   both services before declaring success.
+3. Added automatic recovery to the running control release when a local or
+   fetched rollback fails health verification.
+4. Added detected host-OS labels to status, reports and maintenance flows;
+   apt-family host updates are supported only where the bridge explicitly
+   recognises the operating system.
+5. Improved command navigation, measured response timing and honest progress
+   feedback across interactive views.
+6. Expanded the onboarding, security, publishing and tested-setup
+   documentation, with Python and Node regression coverage for the new paths.
+
 ## 0.3.19 - 2026-08-31
 
 - relicensed the project code under GNU AGPLv3-or-later; the historical

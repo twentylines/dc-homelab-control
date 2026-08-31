@@ -11,6 +11,7 @@ services:
       HOST_HWMON: /host/sys/class/hwmon
       HOST_DMI: /host/sys/firmware/dmi/tables
       HOST_HOSTNAME_FILE: /host/etc/hostname
+      HOST_OS_RELEASE_FILE: /host/etc/os-release
       HOST_SSD_PATH: /host/app-data
       HOST_SSD_LABEL: ${HOST_SSD_LABEL:-Application data}
       HOST_MEDIA_PATH: /host/media
@@ -23,7 +24,7 @@ services:
       HOMELAB_CONTROL_VERSION: ${HOMELAB_CONTROL_VERSION:-0.3.19}
       HOMELAB_CONTROL_RELEASE_CHANNEL: ${HOMELAB_CONTROL_RELEASE_CHANNEL:-stable}
       HOMELAB_CONTROL_RELEASE_ASSET: ${HOMELAB_CONTROL_RELEASE_ASSET:-}
-      SERVICE_CONTROL_MODE: ${SERVICE_CONTROL_MODE:-opt-in}
+      SERVICE_CONTROL_MODE: ${SERVICE_CONTROL_MODE:-opt-out}
       CONTROL_BOT_NAME: ${BOT_NAME:-Homelab Control}
       MEDIA_REQUIRED_PROVIDERS: ${MEDIA_REQUIRED_PROVIDERS:-}
       MEDIA_STACK_PROFILE: ${MEDIA_STACK_PROFILE:-auto}
@@ -45,6 +46,7 @@ services:
       - /sys/class/hwmon:/host/sys/class/hwmon:ro
       - /sys/firmware/dmi/tables:/host/sys/firmware/dmi/tables:ro
       - /etc/hostname:/host/etc/hostname:ro
+      - /etc/os-release:/host/etc/os-release:ro
       - ${HOST_DATA_PATH:-./data/host-app-data}:/host/app-data:ro
       - ${MEDIA_PATH:-./media}:/host/media:ro
       - ${MAINTENANCE_DIR:-./data/maintenance}:/host/maintenance:rw
@@ -91,7 +93,7 @@ services:
       BOT_NAME: ${BOT_NAME:-Homelab Control}
       SERVER_NAME: ${SERVER_NAME:-}
       TIME_ZONE: ${TIME_ZONE:-UTC}
-      SERVICE_CONTROL_MODE: ${SERVICE_CONTROL_MODE:-opt-in}
+      SERVICE_CONTROL_MODE: ${SERVICE_CONTROL_MODE:-opt-out}
       MINECRAFT_BACKEND: ${MINECRAFT_BACKEND:-auto}
       CRAFTY_BASE_URL: ${CRAFTY_BASE_URL:-}
       CRAFTY_API_TOKEN: ${CRAFTY_API_TOKEN:-}

@@ -22,5 +22,8 @@
       action buttons.
 - [ ] Review Docker socket exposure and the host-maintenance bridge separately
       before enabling updates or reboots.
+- [ ] Verify `/updates` bot rollback first with retained images, then with the
+      local pair removed so the exact earlier GitHub archive is fetched,
+      checksum-verified, built and health-checked.
 - [ ] Submit to a community or own Runtipi app store only after the public
       repository and image signatures are available.

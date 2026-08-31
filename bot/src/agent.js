@@ -28,6 +28,15 @@ export const agent = {
       'X-Discord-User-Name': user.username,
     },
   }),
+  setControlMode: (mode, user) => request('/v1/control-policy', {
+    method: 'POST',
+    body: JSON.stringify({ mode }),
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Discord-User-ID': user.id,
+      'X-Discord-User-Name': user.username,
+    },
+  }),
   media: () => request('/v1/media'),
   mediaSummary: () => request('/v1/media-summary'),
   network: () => request('/v1/network'),

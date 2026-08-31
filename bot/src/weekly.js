@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { config } from './config.js';
 import { agent } from './agent.js';
-import { base, botName, colors, reportEmbeds, serverName } from './ui.js';
+import { base, botName, colors, operatingSystemShortLabel, reportEmbeds, serverName } from './ui.js';
 
 const STATE_FILE = '/data/weekly-report-state.json';
 const CHECK_INTERVAL_MS = 30_000;
@@ -113,7 +113,7 @@ export async function notifyMaintenanceOnline() {
     if (state.lastOnline === key) return false;
     const sent = await postWebhook({
       username: botName(),
-      embeds: [base(`${serverName()} is back online`, `🟢 The host completed the confirmed Ubuntu restart and is responding again.\n\nJob **${snapshot.job_id || 'unknown'}** · <t:${Math.floor(new Date(snapshot.online_at || Date.now()).getTime() / 1000)}:R>`).setColor(colors.ok).toJSON()],
+      embeds: [base(`${serverName()} is back online`, `🟢 ${operatingSystemShortLabel(snapshot, 'The host')} completed the confirmed restart and is responding again.\n\nJob **${snapshot.job_id || 'unknown'}** · <t:${Math.floor(new Date(snapshot.online_at || Date.now()).getTime() / 1000)}:R>`).setColor(colors.ok).toJSON()],
     });
     if (sent) {
       state.lastOnline = key;
