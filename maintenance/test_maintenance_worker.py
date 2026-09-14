@@ -77,6 +77,52 @@ class MaintenanceWorkerTest(unittest.TestCase):
         self.assertNotIn("build:", content)
         self.assertIn('image: "local/homelab-control-agent:0.3.19"', content)
         self.assertIn('image: "local/homelab-control-bot:0.3.19"', content)
+        self.assertIn(":/host/maintenance:rw", content)
+        self.assertIn("/etc/os-release:/host/etc/os-release:ro", content)
+        self.assertIn("/etc/resolv.conf:/host/etc/resolv.conf:ro", content)
+
+    def test_recovery_recreates_the_exact_running_image_pair(self):
+        import tempfile
+
+        current = {
+            "agent_image": "ghcr.io/twentylines/dc-homelab-control-agent:0.4.0c",
+            "bot_image": "ghcr.io/twentylines/dc-homelab-control-bot:0.4.0c",
+        }
+        writes = []
+        commands = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            compose_file = root / "compose.yml"
+            compose_file.write_text("services: {}\n", encoding="utf-8")
+
+            def record_command(status, command, _label):
+                commands.append(command)
+                return True
+
+            with patch.object(self.module, "BOT_RELEASE_ROOT", root / "releases"), \
+                    patch.object(self.module, "BOT_RELEASE_COMPOSE_FILE", compose_file), \
+                    patch.object(self.module, "read_bot_status", return_value={"phase": "idle"}), \
+                    patch.object(self.module, "release_snapshot", side_effect=[current, current]), \
+                    patch.object(self.module, "bot_update_supported", return_value=True), \
+                    patch.object(self.module, "compose_base_command", return_value=["docker", "compose", "-f", str(compose_file)]), \
+                    patch.object(self.module, "_backup_control_config", return_value=None), \
+                    patch.object(self.module, "_backup_runtime_settings", return_value=None), \
+                    patch.object(self.module, "run_bot_command", side_effect=record_command), \
+                    patch.object(self.module, "wait_control_health", return_value=True), \
+                    patch.object(self.module, "append_bot_event"), \
+                    patch.object(self.module, "write_bot_status", side_effect=lambda status: writes.append(dict(status))):
+                self.module.run_bot_maintenance({"action": "bot_restart", "job_id": "repair-job"})
+
+        self.assertTrue(writes)
+        self.assertEqual(writes[-1]["phase"], "complete")
+        self.assertEqual(writes[-1]["current_version"], "0.4.0c")
+        self.assertEqual(len(commands), 1)
+        command = commands[0]
+        override_index = len(command) - 1 - command[::-1].index("-f")
+        override = pathlib.Path(command[override_index + 1])
+        self.assertTrue("maintenance-repair-job.yml" in str(override))
+        self.assertIn("--force-recreate", command)
+        self.assertFalse(override.exists())
 
     def test_rollback_builds_the_verified_github_release_when_local_images_are_missing(self):
         import tempfile

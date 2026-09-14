@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0d - 2026-09-15
+
+1. Fixed recovery and reset-related container recreation so it always pins and
+   verifies the exact image pair that was running before the action; a stale
+   generated Compose file can no longer silently downgrade the control bot.
+2. Kept the maintenance bridge, host operating-system and resolver mounts in
+   guarded Compose overrides for older Runtipi-generated definitions.
+3. Standardised the default bridge directory and added regression coverage for
+   image-pair preservation and compatibility mounts.
+
 ## 0.4.0c - 2026-08-31
 
 1. Fixed network-page titles on older Runtipi layouts by using the Docker

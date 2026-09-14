@@ -15,7 +15,7 @@ homelab without carrying those private names into the code or UI.
 
 ## Tested reference setup
 
-The reference deployment used for the 0.4.0c hotfix checks is Ubuntu
+The reference deployment used for the 0.4.0d hotfix checks is Ubuntu
 Server 24.04 LTS on amd64 with Docker managed by Runtipi, a Jellyfin/Seerr
 media stack (including Sonarr, Radarr, Prowlarr and qBittorrent), Crafty
 Controller for Minecraft, and supporting AdGuard Home, Beszel, Scrutiny,
@@ -251,6 +251,12 @@ bridge. Scheduled bot updates use the same checksum and health gates and are
 limited to the selected opt-in mode. Reverting to much older versions is not
 recommended because
 configuration, APIs or stored data may no longer be compatible.
+
+The default shared bridge directory is `/var/lib/homelab-control/maintenance`.
+If a deployment uses a custom `HOMELAB_CONTROL_MAINTENANCE_DIR`, set the same
+path in both the Runtipi app environment and the bridge environment; release
+recovery carries that mount forward even when Runtipi has generated an older
+Compose file.
 
 The worker rejects non-GitHub URLs, path traversal, symlinks, unexpected
 archive contents, checksum mismatches and releases from a different configured

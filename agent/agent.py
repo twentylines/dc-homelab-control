@@ -100,7 +100,7 @@ RUNTIPI_UPDATE_ALL_TIMEOUT = max(120, min(780, int(os.getenv("RUNTIPI_UPDATE_ALL
 RUNTIPI_PROTECTED_APP_IDS = {"homelab-control", "hades-control", "backend", "runtipi"}
 CONTROL_BOT_NAME = os.getenv("CONTROL_BOT_NAME", "Homelab Control").strip() or "Homelab Control"
 HOMELAB_CONTROL_REPOSITORY = os.getenv("HOMELAB_CONTROL_REPOSITORY", "").strip()
-HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.4.0c").strip() or "0.4.0c"
+HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.4.0d").strip() or "0.4.0d"
 HOMELAB_CONTROL_RELEASE_CHANNEL = os.getenv("HOMELAB_CONTROL_RELEASE_CHANNEL", "stable").strip().lower() or "stable"
 if HOMELAB_CONTROL_RELEASE_CHANNEL not in {"stable", "beta"}:
     HOMELAB_CONTROL_RELEASE_CHANNEL = "stable"

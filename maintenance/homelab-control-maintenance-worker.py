@@ -378,6 +378,16 @@ def compose_override(path: Path, contexts=None, images=None):
             f"    image: {quote(images[service])}",
             "    pull_policy: never",
         ])
+        if service == "agent":
+            # Runtipi regenerates its Compose file. Keep the bridge/status
+            # contract and host identity mounts present even when that file is
+            # older than this release.
+            lines.extend([
+                "    volumes:",
+                f"      - {quote(str(MAINTENANCE_DIR) + ':/host/maintenance:rw')}",
+                f"      - {quote('/etc/os-release:/host/etc/os-release:ro')}",
+                f"      - {quote('/etc/resolv.conf:/host/etc/resolv.conf:ro')}",
+            ])
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     os.chmod(path, 0o600)
 
@@ -507,6 +517,16 @@ def release_snapshot():
     }
 
 
+def release_snapshot_matches(expected: dict, observed: dict) -> bool:
+    """Require both control services to remain on the exact image pair."""
+    return bool(
+        expected.get("agent_image")
+        and expected.get("bot_image")
+        and observed.get("agent_image") == expected.get("agent_image")
+        and observed.get("bot_image") == expected.get("bot_image")
+    )
+
+
 def snapshot_version(snapshot):
     images = [snapshot.get("bot_image"), snapshot.get("agent_image")]
     for image in images:
@@ -525,12 +545,16 @@ def restore_release(status: dict, snapshot: dict):
         compose_override(override, images={"agent": snapshot["agent_image"], "bot": snapshot["bot_image"]})
         append_bot_event(status, "Restoring the previous control images")
         write_bot_status(status)
-        command = compose_base_command() + ["-f", str(override), "up", "-d", "--no-deps", "agent", "bot"]
+        command = compose_base_command() + ["-f", str(override), "up", "-d", "--force-recreate", "--no-deps", "agent", "bot"]
         status["containers_changed"] = True
         write_bot_status(status)
         if not run_bot_command(status, command, "Switching back to the previous control release"):
             return False
         healthy = wait_control_health(status)
+        if healthy and not release_snapshot_matches(snapshot, release_snapshot()):
+            append_bot_event(status, "The restored containers did not use the expected image pair")
+            write_bot_status(status)
+            return False
         if healthy:
             status["restored"] = True
             write_bot_status(status)
@@ -855,6 +879,8 @@ def run_bot_maintenance(request: dict):
     write_bot_status(status)
     backup = None
     runtime_backup = None
+    snapshot = None
+    override = None
     try:
         if action == "settings_reset":
             backup = _backup_control_config()
@@ -876,6 +902,13 @@ def run_bot_maintenance(request: dict):
             append_bot_event(status, "Configuration and runtime settings reset completed with private backups")
             write_bot_status(status)
             return
+        # Any action below this point recreates the control containers. Capture
+        # the exact running image pair before touching settings so a stale
+        # generated Compose file cannot turn recovery into an accidental
+        # downgrade.
+        snapshot = release_snapshot()
+        if not snapshot.get("agent_image") or not snapshot.get("bot_image"):
+            raise RuntimeError("The current control image pair could not be identified; recovery was not attempted")
         if action == "settings_restore":
             backup = _backup_control_config()
             runtime_backup = _backup_runtime_settings()
@@ -907,19 +940,26 @@ def run_bot_maintenance(request: dict):
             raise RuntimeError("Unknown bot maintenance action")
         status["phase"] = "restarting"
         write_bot_status(status)
-        command = compose_base_command() + ["up", "-d", "--force-recreate", "--no-deps", "agent", "bot"]
+        override = BOT_RELEASE_ROOT / f"maintenance-{status.get('job_id') or 'current'}.yml"
+        override.parent.mkdir(parents=True, exist_ok=True)
+        compose_override(override, images={"agent": snapshot["agent_image"], "bot": snapshot["bot_image"]})
+        command = compose_base_command() + ["-f", str(override), "up", "-d", "--force-recreate", "--no-deps", "agent", "bot"]
+        status["containers_changed"] = True
         if not run_bot_command(status, command, "Starting the repaired control containers"):
             raise RuntimeError("The control containers could not be started")
         status["phase"] = "verifying_runtime"
         write_bot_status(status)
         if not wait_control_health(status):
             raise RuntimeError("The repaired control containers did not become healthy")
-        status.update({"phase": "complete", "current_version": snapshot_version(release_snapshot()), "completed_at": timestamp(), "detail": "Control recovery completed and both health checks passed"})
-        append_bot_event(status, "Control recovery completed and verified")
+        observed = release_snapshot()
+        if not release_snapshot_matches(snapshot, observed):
+            raise RuntimeError("Recovery was refused because the control image pair changed")
+        status.update({"phase": "complete", "current_version": snapshot_version(observed), "completed_at": timestamp(), "detail": "Control recovery completed without changing the running release; both health checks passed"})
+        append_bot_event(status, "Control recovery completed and verified without changing the release")
         write_bot_status(status)
     except Exception as exc:
-        # A failed fresh repair must not strand a working deployment. Restore
-        # the exact pre-action config and report the recovery honestly.
+        # A failed recovery must not strand a working deployment. Restore the
+        # exact pre-action config and image pair and report both outcomes.
         restored = False
         if backup and CONTROL_CONFIG_FILE and CONTROL_CONFIG_FILE.is_file():
             try:
@@ -933,6 +973,16 @@ def run_bot_maintenance(request: dict):
                 restored = True
             except Exception:
                 pass
+        image_restored = False
+        if snapshot and status.get("containers_changed"):
+            try:
+                if not release_snapshot_matches(snapshot, release_snapshot()):
+                    image_restored = restore_release(status, snapshot)
+            except Exception:
+                image_restored = False
+        if image_restored:
+            status["restored"] = True
+            append_bot_event(status, "Recovery changed the image pair; the pre-action control release was restored")
         if restored:
             append_bot_event(status, "Recovery failed; the pre-action settings backup was restored")
         elif backup or runtime_backup:
@@ -940,6 +990,12 @@ def run_bot_maintenance(request: dict):
         status["phase"] = "failed"
         status["detail"] = clean_line(str(exc), 240)
         write_bot_status(status)
+    finally:
+        if override:
+            try:
+                override.unlink()
+            except OSError:
+                pass
 def base_status(existing=None):
     status = dict(existing or {})
     status["kind"] = "host"
