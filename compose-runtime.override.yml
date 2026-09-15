@@ -6,6 +6,7 @@ services:
       HOST_DMI: /host/sys/firmware/dmi/tables
       HOST_HOSTNAME_FILE: /host/etc/hostname
       HOST_OS_RELEASE_FILE: /host/etc/os-release
+      HOST_RESOLV_CONF_FILE: /host/etc/resolv.conf
       MAINTENANCE_DIR: /host/maintenance
       HOST_UPDATE_NOTIFIER_DIR: /host/update-notifier
       RUNTIPI_ENV_FILE: /run/secrets/runtipi-env
@@ -13,6 +14,7 @@ services:
       - /sys/firmware/dmi/tables:/host/sys/firmware/dmi/tables:ro
       - /etc/hostname:/host/etc/hostname:ro
       - /etc/os-release:/host/etc/os-release:ro
+      - /etc/resolv.conf:/host/etc/resolv.conf:ro
       - ${HOMELAB_CONTROL_MAINTENANCE_DIR:-/tmp/homelab-control-maintenance}:/host/maintenance:rw
       - /var/lib/update-notifier:/host/update-notifier:ro
       - ${ROOT_FOLDER_HOST:-/opt/runtipi}/.env:/run/secrets/runtipi-env:ro

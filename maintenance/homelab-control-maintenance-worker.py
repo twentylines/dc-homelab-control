@@ -30,7 +30,7 @@ STATUS_FILE = MAINTENANCE_DIR / "status.json"
 REQUEST_FILE = MAINTENANCE_DIR / "request.json"
 BOT_RELEASE_STATUS_FILE = MAINTENANCE_DIR / "bot-release.json"
 BOT_RELEASE_ROOT = Path(os.getenv("HOMELAB_CONTROL_RELEASE_ROOT", str(MAINTENANCE_DIR / "releases")))
-BOT_RELEASE_REPOSITORY = os.getenv("HOMELAB_CONTROL_REPOSITORY", "").strip()
+BOT_RELEASE_REPOSITORY_RAW = os.getenv("HOMELAB_CONTROL_REPOSITORY", "").strip()
 BOT_RELEASE_COMPOSE_FILE = Path(os.getenv("HOMELAB_CONTROL_COMPOSE_FILE", "")).expanduser() if os.getenv("HOMELAB_CONTROL_COMPOSE_FILE", "").strip() else None
 BOT_RELEASE_ENV_FILE = Path(os.getenv("HOMELAB_CONTROL_ENV_FILE", "")).expanduser() if os.getenv("HOMELAB_CONTROL_ENV_FILE", "").strip() else None
 BOT_RELEASE_COMPOSE_PROJECT = os.getenv("HOMELAB_CONTROL_COMPOSE_PROJECT", "").strip()
@@ -53,6 +53,37 @@ STATUS_INTERVAL_SECONDS = 300.0
 COMMAND_TIMEOUT_SECONDS = 1800
 BRIDGE_PROTOCOL_VERSION = 2
 BRIDGE_CAPABILITIES = ("host-os", "host-updates", "bot-release-v2")
+
+
+def normalise_repository(value: str) -> str:
+    """Return a canonical owner/repository for a public GitHub repository.
+
+    Runtipi may store a pasted HTTPS URL, but release requests and archive
+    paths use the owner/repository spelling.  Only the exact github.com HTTPS
+    host is accepted; credentials, query strings and path suffixes are not.
+    """
+    raw = str(value or "").strip()
+    if BOT_RELEASE_REPOSITORY_RE.fullmatch(raw):
+        return raw
+    try:
+        parsed = urllib.parse.urlparse(raw)
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme.lower() != "https"
+        or parsed.netloc.lower() != "github.com"
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+    path = parsed.path.strip("/")
+    if path.lower().endswith(".git"):
+        path = path[:-4]
+    return path if BOT_RELEASE_REPOSITORY_RE.fullmatch(path) else ""
+
+
+BOT_RELEASE_REPOSITORY = normalise_repository(BOT_RELEASE_REPOSITORY_RAW)
 
 
 def timestamp() -> str:

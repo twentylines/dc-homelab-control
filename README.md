@@ -4,7 +4,7 @@ Homelab Control is a private, read-first Discord control panel for Docker and
 Runtipi homelabs. It is a generic product: the bot name, server name, guilds,
 roles and integrations are configuration, not assumptions in the code.
 
-This repository is intentionally conservative. The release candidate is
+This repository is intentionally conservative. The stable channel is
 strongest on the combinations that are easiest to verify: Crafty plus a
 Jellyfin/Seerr/Sonarr/Radarr/Prowlarr/qBittorrent media stack, and ordinary
 Docker containers. Other integrations stay optional and quiet when absent.
@@ -15,7 +15,7 @@ homelab without carrying those private names into the code or UI.
 
 ## Tested reference setup
 
-The reference deployment used for the 0.4.0d hotfix checks is Ubuntu
+The reference deployment used for the 0.4.1 release checks is Ubuntu
 Server 24.04 LTS on amd64 with Docker managed by Runtipi, a Jellyfin/Seerr
 media stack (including Sonarr, Radarr, Prowlarr and qBittorrent), Crafty
 Controller for Minecraft, and supporting AdGuard Home, Beszel, Scrutiny,
@@ -27,6 +27,12 @@ Pterodactyl/Pelican fixtures. Other dashboards and providers are detected only
 where their documented read-only path responds; they are not claimed as
 equally tested. The control agent and bot are separate Alpine-based containers;
 the UI reports that container identity separately from the Ubuntu host.
+
+Crafty’s generated certificate is supported without disabling TLS: place the
+public certificate in the bot data mount and configure `CRAFTY_CA_CERT_FILE`
+(and, when needed, `CRAFTY_TLS_SERVERNAME`). See
+[`docs/MINECRAFT.md`](docs/MINECRAFT.md) for the safe setup; the insecure TLS
+switch remains an explicit private-network fallback.
 
 ## What is included
 
@@ -216,11 +222,16 @@ The Runtipi definition points at the versioned GHCR images published by this
 repository's release workflow. Make those packages public before installing
 the app on another host, and run [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md)
 before submitting it to a community or own Runtipi store.
+The app version and image tags are validated as one release unit; pulling a
+Docker image by hand does not update Runtipi's app version. Stage the matching
+payload and choose **Update** in Runtipi so it regenerates its owned Compose
+definition before the next settings save.
 
 ## Bot releases and rollback
 
-Set `HOMELAB_CONTROL_REPOSITORY=owner/repository` to show the latest release
-in `/updates`. This check is read-only. A release never installs merely because
+Set `HOMELAB_CONTROL_REPOSITORY=owner/repository` (or paste the equivalent
+HTTPS GitHub repository URL) to show the latest release in `/updates`. This
+check is read-only. A release never installs merely because
 the bot restarts; self-updates are off by default and only run after an
 administrator opts into a schedule in `/settings`. The release must
 contain exactly one `.tar.gz` or `.tgz` source archive with a GitHub SHA-256
@@ -293,8 +304,8 @@ root-owned files and the bridge configuration private.
   if an older environment setting requested a schedule.
 
 See [`docs/SETUP.md`](docs/SETUP.md), [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md),
-[`docs/MINECRAFT.md`](docs/MINECRAFT.md) and [`SECURITY.md`](SECURITY.md) for
-the full onboarding and review notes.
+[`docs/MINECRAFT.md`](docs/MINECRAFT.md), [`docs/RUNTIPI.md`](docs/RUNTIPI.md)
+and [`SECURITY.md`](SECURITY.md) for the full onboarding and review notes.
 
 ## Development checks
 
@@ -326,7 +337,7 @@ automation. A normal publication is:
    the source, writes `SHA256SUMS`, creates the GitHub release checked by
    `/updates`, and publishes the verified amd64 image to GHCR. arm64 remains
    out of the app manifest until runtime testing is available. Use a normal tag
-   such as `v0.4.0` for stable releases; a hyphenated tag such as
+   such as `v0.4.1` for stable releases; a hyphenated tag such as
    `v0.4.0-beta.1` is published as a GitHub pre-release, while compact letter
    tags such as `v0.4.0a` remain stable hotfixes.
 4. Make the GHCR packages public before using the Runtipi `app/` definition on

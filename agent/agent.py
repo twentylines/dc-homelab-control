@@ -100,7 +100,7 @@ RUNTIPI_UPDATE_ALL_TIMEOUT = max(120, min(780, int(os.getenv("RUNTIPI_UPDATE_ALL
 RUNTIPI_PROTECTED_APP_IDS = {"homelab-control", "hades-control", "backend", "runtipi"}
 CONTROL_BOT_NAME = os.getenv("CONTROL_BOT_NAME", "Homelab Control").strip() or "Homelab Control"
 HOMELAB_CONTROL_REPOSITORY = os.getenv("HOMELAB_CONTROL_REPOSITORY", "").strip()
-HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.4.0d").strip() or "0.4.0d"
+HOMELAB_CONTROL_VERSION = os.getenv("HOMELAB_CONTROL_VERSION", "0.4.1").strip() or "0.4.1"
 HOMELAB_CONTROL_RELEASE_CHANNEL = os.getenv("HOMELAB_CONTROL_RELEASE_CHANNEL", "stable").strip().lower() or "stable"
 if HOMELAB_CONTROL_RELEASE_CHANNEL not in {"stable", "beta"}:
     HOMELAB_CONTROL_RELEASE_CHANNEL = "stable"
@@ -2767,6 +2767,35 @@ _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100}$")
 _SHA256_RE = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
 
 
+def _normalise_repository(value):
+    """Return a canonical ``owner/repository`` for a public GitHub repo.
+
+    Runtipi forms commonly preserve a pasted HTTPS URL, while the GitHub API
+    and the release bridge use the shorter owner/repository spelling.  Accept
+    both safe forms, but never accept another host, credentials, query string
+    or path suffix.
+    """
+    raw = str(value or "").strip()
+    if _REPOSITORY_RE.fullmatch(raw):
+        return raw
+    try:
+        parsed = urlparse(raw)
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme.lower() != "https"
+        or parsed.netloc.lower() != "github.com"
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+    path = parsed.path.strip("/")
+    if path.lower().endswith(".git"):
+        path = path[:-4]
+    return path if _REPOSITORY_RE.fullmatch(path) else ""
+
+
 def _release_version(value):
     """Return a normalised release version or None for an unsafe tag.
 
@@ -3159,7 +3188,8 @@ def bot_release_status(force=False, channel=None):
         and bridge_version >= 2
         and "bot-release-v2" in bridge_capabilities
     )
-    repository = HOMELAB_CONTROL_REPOSITORY
+    raw_repository = HOMELAB_CONTROL_REPOSITORY
+    repository = _normalise_repository(raw_repository)
     release_channel = channel if channel in {"stable", "beta"} else HOMELAB_CONTROL_RELEASE_CHANNEL
     state_current = state.get("current_version")
     running_version = _running_control_version()
@@ -3203,12 +3233,12 @@ def bot_release_status(force=False, channel=None):
             base["detail"] = "The installed maintenance bridge is legacy; update the bridge before bot releases can be used"
         else:
             base["detail"] = "The guarded maintenance bridge has not published the release protocol required by this bot"
-    if not repository:
+    if not raw_repository:
         base["detail"] = "Set HOMELAB_CONTROL_REPOSITORY to enable bot release checks"
         return base
-    if not _REPOSITORY_RE.fullmatch(repository):
+    if not repository:
         base["configured"] = False
-        base["detail"] = "HOMELAB_CONTROL_REPOSITORY must use owner/repository form"
+        base["detail"] = "HOMELAB_CONTROL_REPOSITORY must be owner/repository or an HTTPS GitHub repository URL"
         return base
     now = time.monotonic()
     with _bot_release_cache_lock:

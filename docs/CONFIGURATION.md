@@ -18,7 +18,7 @@ still be filled from that file.
 | `DISCORD_GUEST_USER_IDS` / `DISCORD_GUEST_ROLE_IDS` | No | Read-only users; `/wake` remains available. |
 | `BOT_NAME` / `SERVER_NAME` / `TIME_ZONE` | No | Branding and timestamps. |
 | `SERVICE_CONTROL_MODE` | No | `opt-out` (default), or `opt-in` for approval-before-controls. |
-| `HOMELAB_CONTROL_REPOSITORY` | No | Public GitHub `owner/repository` used for read-only bot release checks. |
+| `HOMELAB_CONTROL_REPOSITORY` | No | Public GitHub `owner/repository` (or HTTPS GitHub URL) used for read-only bot release checks. |
 | `HOMELAB_CONTROL_VERSION` | No | Installed bot release, used for safe version comparison. |
 | `HOMELAB_CONTROL_RELEASE_CHANNEL` | No | `stable` (default) or `beta`; beta includes stable releases and GitHub pre-releases. Automatic beta updates still require an explicit administrator acknowledgement in `/settings`. |
 | `HOMELAB_CONTROL_RELEASE_ASSET` | No | Exact archive filename when a release contains more than one archive. |
@@ -31,7 +31,7 @@ still be filled from that file.
 | `JELLYFIN_*` / `PLEX_*` | No | Read-only media APIs. |
 | `PIHOLE_BASE_URL` / `TECHNITIUM_BASE_URL` / `ADGUARD_BASE_URL` | No | External read-only network endpoints. |
 | `MINECRAFT_BACKEND` | No | `auto`, `docker`, `crafty`, `pterodactyl`, `pelican`, or `none`. |
-| `CRAFTY_*` | No | Crafty URL, token and optional self-signed TLS switch. |
+| `CRAFTY_*` | No | Crafty URL/token plus optional scoped public-certificate trust (`CRAFTY_CA_CERT_FILE` and `CRAFTY_TLS_SERVERNAME`). The insecure TLS switch is an explicit fallback only. |
 | `PTERODACTYL_*` / `PELICAN_*` | No | API-compatible client panel URL and token. |
 | `WAKE_*` | No | Default Wake-on-LAN favourite/broadcast. |
 | `WEEKLY_REPORT_*` | No | Optional HTTPS Discord webhook and weekly toggle. |

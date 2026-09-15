@@ -47,6 +47,7 @@ jobs:
           set -euo pipefail
           python -m py_compile agent/agent.py maintenance/homelab-control-maintenance-worker.py
           sh -n scripts/install-compose.sh install-staged-app.sh
+          python3 scripts/validate-runtipi-app.py
           node --check bot/src/agent.js
           for file in bot/src/*.js; do node --check "$file"; done
           python -m json.tool app/config.json >/dev/null

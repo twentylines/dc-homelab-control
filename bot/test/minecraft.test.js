@@ -1,6 +1,36 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { minecraftInternals } from '../src/minecraft.js';
+
+test('Crafty scoped TLS trust reads a public certificate and optional server name', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'homelab-control-crafty-ca-'));
+  const file = join(directory, 'crafty-ca.pem');
+  writeFileSync(file, '-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n');
+  try {
+    const options = minecraftInternals.craftyTlsOptions({ craftyCaCertFile: file, craftyTlsServername: 'localhost' });
+    assert.equal(options.servername, 'localhost');
+    assert.match(options.ca.toString(), /BEGIN CERTIFICATE/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Crafty scoped TLS trust refuses a private key path', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'homelab-control-crafty-key-'));
+  const file = join(directory, 'not-a-ca.pem');
+  writeFileSync(file, '-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----\n');
+  try {
+    assert.throws(
+      () => minecraftInternals.craftyTlsOptions({ craftyCaCertFile: file, craftyTlsServername: '' }),
+      /public certificate, not a private key/i,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('Pterodactyl-compatible discovery uses canonical client routes and resources', async () => {
   const requests = [];

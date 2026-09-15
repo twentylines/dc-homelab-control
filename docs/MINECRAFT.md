@@ -13,9 +13,25 @@ confirmation.
 
 Crafty is the best-tested panel in this release. Set `CRAFTY_BASE_URL` and a
 restricted `CRAFTY_API_TOKEN`. The bot uses the v2 server list, stats, standard
-start/stop/restart/backup actions and stdin console endpoint. Self-signed TLS
-is rejected by default; set `CRAFTY_ALLOW_INSECURE_TLS=true` only on a trusted
-private network when the panel cannot provide a valid certificate.
+start/stop/restart/backup actions and stdin console endpoint.
+
+Self-signed TLS is rejected by default. The preferred fix is scoped trust:
+copy Crafty’s **public** certificate (for example `commander.cert.pem`) into
+the bot’s persistent `/data` directory, set
+`CRAFTY_CA_CERT_FILE=/data/crafty-ca.pem`, and restart the bot. Do not copy or
+mount Crafty’s private key. If the certificate’s subject-alternative names do
+not include the internal service hostname, set
+`CRAFTY_TLS_SERVERNAME` to a name that is present in the certificate (Crafty’s
+default certificate commonly includes `localhost`) while keeping the pinned
+certificate file configured. The bot then validates that certificate only;
+other HTTPS integrations keep their normal system trust store.
+
+If a trusted certificate or scoped public certificate cannot be used,
+`CRAFTY_ALLOW_INSECURE_TLS=true` remains available as an explicit private
+network fallback. It disables certificate verification for Crafty and should
+not be enabled on an exposed or shared network. When TLS fails, `/minecraft`
+now says that no action was taken and names the safe configuration path rather
+than presenting a bare certificate error.
 
 ### Pterodactyl and Pelican
 

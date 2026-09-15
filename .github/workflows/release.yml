@@ -47,6 +47,7 @@ jobs:
           python -m unittest discover -s agent -p 'test_*.py' -v
           python -m unittest discover -s maintenance -p 'test_*.py' -v
           python -m py_compile agent/agent.py maintenance/homelab-control-maintenance-worker.py
+          python3 scripts/validate-runtipi-app.py
           for file in bot/src/*.js; do node --check "$file"; done
           (cd bot && npm test)
 

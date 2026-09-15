@@ -27,6 +27,14 @@ class MaintenanceWorkerTest(unittest.TestCase):
         self.assertEqual(self.module.bot_version("v0.3.22D"), "0.3.22d")
         self.assertIsNone(self.module._release_version_key("latest"))
 
+    def test_repository_setting_accepts_canonical_and_https_github_forms_only(self):
+        normalise = self.module.normalise_repository
+        self.assertEqual(normalise("twentylines/dc-homelab-control"), "twentylines/dc-homelab-control")
+        self.assertEqual(normalise("https://github.com/twentylines/dc-homelab-control.git"), "twentylines/dc-homelab-control")
+        self.assertEqual(normalise("https://github.com/twentylines/dc-homelab-control/"), "twentylines/dc-homelab-control")
+        self.assertEqual(normalise("https://evil.example/twentylines/dc-homelab-control"), "")
+        self.assertEqual(normalise("https://github.com/twentylines/dc-homelab-control?token=secret"), "")
+
     def test_host_status_publishes_release_bridge_protocol_marker(self):
         status = self.module.base_status()
         self.assertEqual(status["kind"], "host")

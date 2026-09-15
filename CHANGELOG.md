@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1 - 2026-09-16
+
+1. Made the GitHub release source tolerant of either `owner/repository` or an
+   HTTPS GitHub URL, while continuing to reject non-GitHub hosts, credentials,
+   query strings and fragments.
+2. Added scoped Crafty certificate trust for self-signed installations so the
+   Minecraft integration can keep TLS verification enabled without weakening
+   unrelated requests; private keys are rejected by the configuration guard.
+3. Kept bot self-updates manual by default and retained the archive, checksum,
+   exact-repository and post-update health checks for every release action.
+
 ## 0.4.0d - 2026-09-15
 
 1. Fixed recovery and reset-related container recreation so it always pins and

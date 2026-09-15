@@ -33,6 +33,15 @@ class AgentHelpersTest(unittest.TestCase):
         self.assertNotIn("abc", value)
         self.assertNotIn("secret", value)
 
+    def test_repository_setting_accepts_canonical_and_https_github_forms_only(self):
+        normalise = self.module._normalise_repository
+        self.assertEqual(normalise("twentylines/dc-homelab-control"), "twentylines/dc-homelab-control")
+        self.assertEqual(normalise("https://github.com/twentylines/dc-homelab-control.git"), "twentylines/dc-homelab-control")
+        self.assertEqual(normalise("https://github.com/twentylines/dc-homelab-control/"), "twentylines/dc-homelab-control")
+        self.assertEqual(normalise("https://evil.example/twentylines/dc-homelab-control"), "")
+        self.assertEqual(normalise("https://github.com/twentylines/dc-homelab-control?token=secret"), "")
+        self.assertEqual(normalise("https://user:pass@github.com/twentylines/dc-homelab-control"), "")
+
     def test_host_and_container_os_are_reported_as_separate_identities(self):
         import tempfile
 
@@ -714,6 +723,22 @@ class AgentHelpersTest(unittest.TestCase):
             status = self.module.bot_release_status(force=True)
         self.assertTrue(status["bridge_ready"])
         self.assertTrue(status["update_supported"])
+
+    def test_bot_release_status_normalises_a_pasted_github_url(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(self.module, "HOMELAB_CONTROL_REPOSITORY", "https://github.com/example/homelab-control.git"), \
+                patch.object(self.module, "HOMELAB_CONTROL_VERSION", "0.4.0"), \
+                patch.object(self.module, "BOT_RELEASE_STATUS_FILE", pathlib.Path(directory) / "bot-release.json"), \
+                patch.object(self.module, "_safe_maintenance_status", return_value={"kind": "host", "bridge_version": 2, "bridge_capabilities": ["bot-release-v2"]}), \
+                patch.object(self.module, "_running_control_version", return_value="0.4.0"), \
+                patch.object(self.module, "_github_releases_payload", return_value=[]), \
+                patch.object(self.module, "_github_release_payload", return_value={"tag_name": "v0.4.0", "prerelease": False, "assets": []}):
+            self.module._bot_release_cache_value = None
+            self.module._bot_release_cache_timestamp = 0.0
+            status = self.module.bot_release_status(force=True)
+        self.assertTrue(status["configured"])
+        self.assertEqual(status["repository"], "example/homelab-control")
 
     def test_bot_release_status_detects_compact_b_hotfix(self):
         import tempfile

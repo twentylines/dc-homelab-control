@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { actionLoadingEmbed, bar, base, botMaintenanceLoadingEmbed, botMaintenanceRestartEmbed, botMaintenanceResultEmbed, botReleaseLoadingEmbed, botReleaseRestartEmbed, botReleaseResultEmbed, botReleaseSummary, botRollbackConfirmationEmbed, botRollbackOptionsEmbed, botRollbackOptionsRows, botUpdateConfirmationEmbed, bytes, controlsEmbed, controlsRows, deepBackRow, duration, healthEmbed, helpEmbed, hostRestartResultEmbed, hostRestartWaitingEmbed, hostUpdateSummary, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, networkEmbed, operatingSystemLabel, operatingSystemShortLabel, panelEmbed, panelRows, pingEmbed, postUpdateNoticeEmbed, reportEmbeds, serviceRows, servicesEmbed, settingsEmbed, settingsRows, statusEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows, weeklyHealthEmbed } from '../src/ui.js';
+import { actionLoadingEmbed, bar, base, botMaintenanceLoadingEmbed, botMaintenanceRestartEmbed, botMaintenanceResultEmbed, botReleaseLoadingEmbed, botReleaseRestartEmbed, botReleaseResultEmbed, botReleaseSummary, botRollbackConfirmationEmbed, botRollbackOptionsEmbed, botRollbackOptionsRows, botUpdateConfirmationEmbed, bytes, controlsEmbed, controlsRows, deepBackRow, duration, errorEmbed, healthEmbed, helpEmbed, hostRestartResultEmbed, hostRestartWaitingEmbed, hostUpdateSummary, loadingEmbed, mediaEmbed, minecraftEmbed, minecraftRows, networkEmbed, operatingSystemLabel, operatingSystemShortLabel, panelEmbed, panelRows, pingEmbed, postUpdateNoticeEmbed, reportEmbeds, serviceRows, servicesEmbed, settingsEmbed, settingsRows, statusEmbed, systemUpdateLoadingEmbed, systemUpdateResultEmbed, taskDetailEmbed, tasksEmbed, tasksLoadingEmbed, tasksRows, updateLoadingEmbed, updateResultEmbed, updateResultRows, updatesEmbed, updatesRows, weeklyHealthEmbed } from '../src/ui.js';
 import { minecraftInternals } from '../src/minecraft.js';
 
 const sampleStatus = {
@@ -31,6 +31,13 @@ test('uses the detected operating system and provides distinct help and ping vie
   const ping = pingEmbed({ processingMs: 12, websocketMs: 34 }).toJSON();
   assert.match(ping.description, /12 ms/);
   assert.match(ping.description, /34 ms/);
+});
+
+test('explains Crafty certificate failures without claiming a Minecraft action ran', () => {
+  const embed = errorEmbed('self-signed certificate').toJSON();
+  assert.match(embed.description, /Minecraft panel.*TLS certificate.*rejected/i);
+  assert.match(embed.description, /No Minecraft action was taken/i);
+  assert.match(embed.description, /CRAFTY_CA_CERT_FILE/);
 });
 
 test('shows host and control-container operating systems separately', () => {

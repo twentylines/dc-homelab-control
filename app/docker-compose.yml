@@ -3,7 +3,7 @@ x-runtipi:
 
 services:
   agent:
-    image: ${HOMELAB_CONTROL_AGENT_IMAGE:-ghcr.io/twentylines/dc-homelab-control-agent:0.4.0d}
+    image: ${HOMELAB_CONTROL_AGENT_IMAGE:-ghcr.io/twentylines/dc-homelab-control-agent:0.4.1}
     restart: unless-stopped
     environment:
       TZ: ${TZ:-UTC}
@@ -24,7 +24,7 @@ services:
       MAINTENANCE_DIR: /host/maintenance
       HOST_UPDATE_NOTIFIER_DIR: /host/update-notifier
       HOMELAB_CONTROL_REPOSITORY: ${HOMELAB_CONTROL_REPOSITORY:-}
-      HOMELAB_CONTROL_VERSION: ${HOMELAB_CONTROL_VERSION:-0.4.0d}
+      HOMELAB_CONTROL_VERSION: ${HOMELAB_CONTROL_VERSION:-0.4.1}
       HOMELAB_CONTROL_RELEASE_CHANNEL: ${HOMELAB_CONTROL_RELEASE_CHANNEL:-stable}
       HOMELAB_CONTROL_RELEASE_ASSET: ${HOMELAB_CONTROL_RELEASE_ASSET:-}
       HOMELAB_CONTROL_RELEASE_POLICY_URL: ${HOMELAB_CONTROL_RELEASE_POLICY_URL:-}
@@ -85,9 +85,10 @@ services:
     labels:
       homelab.control.component: agent
       homelab.control.managed: "true"
+      homelab.control.release: ${HOMELAB_CONTROL_VERSION:-0.4.1}
 
   bot:
-    image: ${HOMELAB_CONTROL_BOT_IMAGE:-ghcr.io/twentylines/dc-homelab-control-bot:0.4.0d}
+    image: ${HOMELAB_CONTROL_BOT_IMAGE:-ghcr.io/twentylines/dc-homelab-control-bot:0.4.1}
     restart: unless-stopped
     depends_on:
       agent:
@@ -116,6 +117,8 @@ services:
       NETWORK_REQUIRED_PROVIDERS: ${NETWORK_REQUIRED_PROVIDERS:-}
       CRAFTY_API_TOKEN: ${CRAFTY_API_TOKEN:-}
       CRAFTY_BASE_URL: ${CRAFTY_BASE_URL:-}
+      CRAFTY_CA_CERT_FILE: ${CRAFTY_CA_CERT_FILE:-}
+      CRAFTY_TLS_SERVERNAME: ${CRAFTY_TLS_SERVERNAME:-}
       CRAFTY_ALLOW_INSECURE_TLS: ${CRAFTY_ALLOW_INSECURE_TLS:-false}
       PTERODACTYL_BASE_URL: ${PTERODACTYL_BASE_URL:-}
       PTERODACTYL_API_TOKEN: ${PTERODACTYL_API_TOKEN:-}
@@ -126,7 +129,7 @@ services:
       WAKE_DEFAULT_MAC: ${WAKE_DEFAULT_MAC:-}
       WAKE_BROADCAST: ${WAKE_BROADCAST:-255.255.255.255}
       HOMELAB_CONTROL_AGENT_URL: http://agent:8787
-      HOMELAB_CONTROL_VERSION: ${HOMELAB_CONTROL_VERSION:-0.4.0d}
+      HOMELAB_CONTROL_VERSION: ${HOMELAB_CONTROL_VERSION:-0.4.1}
       HOMELAB_CONTROL_REPOSITORY: ${HOMELAB_CONTROL_REPOSITORY:-}
       HOMELAB_CONTROL_RELEASE_CHANNEL: ${HOMELAB_CONTROL_RELEASE_CHANNEL:-stable}
       HOMELAB_CONTROL_RELEASE_ASSET: ${HOMELAB_CONTROL_RELEASE_ASSET:-}
@@ -166,6 +169,7 @@ services:
     labels:
       homelab.control.component: bot
       homelab.control.managed: "true"
+      homelab.control.release: ${HOMELAB_CONTROL_VERSION:-0.4.1}
 
 networks:
   tipi_main_network:

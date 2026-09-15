@@ -1,9 +1,34 @@
 import http from 'node:http';
 import https from 'node:https';
+import { readFileSync } from 'node:fs';
 import { agent } from './agent.js';
 import { config } from './config.js';
 
 const selfSignedAgent = new https.Agent({ rejectUnauthorized: false });
+
+function craftyTlsOptions(settings = config) {
+  const file = String(settings.craftyCaCertFile || '').trim();
+  if (!file) return {};
+  let certificate;
+  try {
+    certificate = readFileSync(file);
+  } catch {
+    throw new Error('Crafty CA certificate file is configured but cannot be read');
+  }
+  const text = certificate.toString('utf8');
+  if (/-----BEGIN [^-]*PRIVATE KEY-----/i.test(text)) {
+    throw new Error('Crafty CA certificate file must contain a public certificate, not a private key');
+  }
+  if (!/-----BEGIN CERTIFICATE-----/i.test(text)) {
+    throw new Error('Crafty CA certificate file is not a PEM certificate');
+  }
+  const options = { ca: certificate };
+  // Crafty commonly generates a certificate for localhost. Only apply an
+  // explicit name override alongside a pinned certificate; never weaken the
+  // default trust store based on a hostname setting alone.
+  if (settings.craftyTlsServername) options.servername = settings.craftyTlsServername;
+  return options;
+}
 
 function unwrap(payload) {
   return payload?.data ?? payload;
@@ -39,7 +64,10 @@ function jsonRequest(baseUrl, path, token, options = {}) {
         'User-Agent': 'HomelabControl/0.1',
       },
     };
-    if (url.protocol === 'https:' && config.craftyAllowInsecureTls && options.allowInsecureTls) requestOptions.agent = selfSignedAgent;
+    if (url.protocol === 'https:' && options.crafty) {
+      Object.assign(requestOptions, craftyTlsOptions());
+      if (config.craftyAllowInsecureTls && options.allowInsecureTls) requestOptions.agent = selfSignedAgent;
+    }
     const request = transport.request(url, requestOptions, (response) => {
       const chunks = [];
       response.on('data', (chunk) => chunks.push(chunk));
@@ -210,7 +238,7 @@ function panelConfigurationError() {
 
 async function panelServers(backend) {
   if (backend.id === 'crafty') {
-    const payload = await jsonRequest(backend.url, '/api/v2/servers', backend.token, { allowInsecureTls: true });
+    const payload = await jsonRequest(backend.url, '/api/v2/servers', backend.token, { allowInsecureTls: true, crafty: true });
     return normalizeCraftyServers(payload);
   }
   return pterodactylServers(backend.url, backend.token, backend.id);
@@ -257,7 +285,7 @@ export const minecraft = {
     if (configurationError) throw new Error(configurationError);
     const backend = panelBackend();
     if (!backend) return server?.resources || {};
-    if (backend.id === 'crafty') return normalizeCraftyStats(await jsonRequest(backend.url, `/api/v2/servers/${encodeURIComponent(id)}/stats`, backend.token, { allowInsecureTls: true }));
+    if (backend.id === 'crafty') return normalizeCraftyStats(await jsonRequest(backend.url, `/api/v2/servers/${encodeURIComponent(id)}/stats`, backend.token, { allowInsecureTls: true, crafty: true }));
     const payload = await jsonRequest(backend.url, `/api/client/servers/${encodeURIComponent(id)}/resources`, backend.token);
     return normalizeResources(payload?.attributes || payload?.data || payload);
   },
@@ -278,7 +306,7 @@ export const minecraft = {
       if (!user) throw new Error('A signed-in administrator is required for Docker server actions');
       return agent.action(id, action, user);
     }
-    if (backend.id === 'crafty') return jsonRequest(backend.url, `/api/v2/servers/${encodeURIComponent(id)}/action/${action}`, backend.token, { method: 'POST', allowInsecureTls: true });
+    if (backend.id === 'crafty') return jsonRequest(backend.url, `/api/v2/servers/${encodeURIComponent(id)}/action/${action}`, backend.token, { method: 'POST', allowInsecureTls: true, crafty: true });
     if (action === 'backup') return jsonRequest(backend.url, `/api/client/servers/${encodeURIComponent(id)}/backups`, backend.token, { method: 'POST', body: { name: 'Homelab Control backup' } });
     return jsonRequest(backend.url, `/api/client/servers/${encodeURIComponent(id)}/power`, backend.token, { method: 'POST', body: { signal: action } });
   },
@@ -287,7 +315,7 @@ export const minecraft = {
     if (configurationError) throw new Error(configurationError);
     const backend = panelBackend();
     if (!backend) throw new Error('Console commands require a configured Crafty, Pterodactyl or Pelican panel');
-    if (backend.id === 'crafty') return jsonRequest(backend.url, `/api/v2/servers/${encodeURIComponent(id)}/stdin`, backend.token, { method: 'POST', body: { command }, allowInsecureTls: true });
+    if (backend.id === 'crafty') return jsonRequest(backend.url, `/api/v2/servers/${encodeURIComponent(id)}/stdin`, backend.token, { method: 'POST', body: { command }, allowInsecureTls: true, crafty: true });
     return jsonRequest(backend.url, `/api/client/servers/${encodeURIComponent(id)}/command`, backend.token, { method: 'POST', body: { command } });
   },
 };
@@ -297,6 +325,7 @@ export const minecraft = {
 export const crafty = minecraft;
 
 export const minecraftInternals = {
+  craftyTlsOptions,
   normalizeResources,
   normalizeCraftyServers,
   normalizeCraftyStats,

@@ -47,6 +47,14 @@ counts and alerts. For Minecraft, configure exactly one of:
 - Docker-only discovery: leave panel values blank and keep
   `MINECRAFT_BACKEND=auto` or set it to `docker`.
 
+If Crafty uses its generated self-signed certificate, keep verification on and
+copy only the public certificate into the bot’s persistent data directory.
+Set `CRAFTY_CA_CERT_FILE=/data/crafty-ca.pem`; if the certificate is issued to
+`localhost` rather than the internal service name, also set
+`CRAFTY_TLS_SERVERNAME=localhost`. Never copy Crafty’s private key. The
+`CRAFTY_ALLOW_INSECURE_TLS=true` setting is an explicit private-network
+fallback, not the default.
+
 For a single-file configuration, the bot reads `HOMELAB_CONTROL_CONFIG_FILE`
 as simple `KEY=VALUE` lines. Non-empty environment variables supplied by
 Compose win; blank form fields can still be filled from the file. It is not
@@ -55,7 +63,8 @@ sourced as a shell script. Never commit `config.env`.
 ## 3a. Optional bot self-updates
 
 To make `/updates` check the bot itself, set
-`HOMELAB_CONTROL_REPOSITORY=owner/repository` and keep
+`HOMELAB_CONTROL_REPOSITORY=owner/repository` (or an HTTPS GitHub repository
+URL) and keep
 `HOMELAB_CONTROL_VERSION` at the installed release. The repository's tagged
 release must be produced by `.github/workflows/release.yml`, which publishes a
 single source archive and its SHA-256 checksum. Checks are read-only and

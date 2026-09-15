@@ -104,6 +104,11 @@ export const config = Object.freeze({
   craftyUrl: optional('CRAFTY_BASE_URL'),
   craftyToken: optional('CRAFTY_API_TOKEN'),
   craftyAllowInsecureTls: optional('CRAFTY_ALLOW_INSECURE_TLS').toLowerCase() === 'true',
+  // Prefer a scoped public CA/certificate file over disabling TLS verification.
+  // The path is resolved inside the bot container (for example
+  // /data/crafty-ca.pem in the persistent bot data mount).
+  craftyCaCertFile: optional('CRAFTY_CA_CERT_FILE'),
+  craftyTlsServername: bounded(optional('CRAFTY_TLS_SERVERNAME'), '', 255),
   minecraftBackend,
   pterodactylUrl: optional('PTERODACTYL_BASE_URL'),
   pterodactylToken: optional('PTERODACTYL_API_TOKEN'),

@@ -550,6 +550,15 @@ function safeUpdateText(value, maximum = 180) {
   return String(value || 'Unknown').replace(/[\\`*_~|\r\n@]/g, '').slice(0, maximum);
 }
 
+function safeErrorText(value, maximum = 1500) {
+  // Keep underscores intact so environment variable names remain copyable,
+  // while still removing Discord formatting, mentions and control characters.
+  return String(value || 'The request did not complete.')
+    .replace(/[\\`*~|\r\n@]/g, '')
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .slice(0, maximum);
+}
+
 function safeReleaseNotes(value) {
   const cleaned = String(value || '')
     .replace(/\r/g, '')
@@ -2114,5 +2123,12 @@ export function minecraftRows(servers) {
 }
 
 export function errorEmbed(message) {
-  return base('Request failed', `🔴 ${String(message).slice(0, 1500)}`, 'Control request result').setColor(colors.bad);
+  const raw = String(message || '').trim();
+  let detail = raw || 'The request did not complete.';
+  if (/self-signed certificate|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE/i.test(raw)) {
+    detail = 'The Minecraft panel’s TLS certificate is self-signed and was rejected. No Minecraft action was taken. For Crafty, install its public certificate in the bot data directory and set `CRAFTY_CA_CERT_FILE`; only use `CRAFTY_ALLOW_INSECURE_TLS=true` on a private network when you explicitly accept that risk.';
+  } else if (/ERR_TLS_CERT_ALTNAME_INVALID|Hostname\/IP does not match|certificate.*altname/i.test(raw)) {
+    detail = 'The Minecraft panel’s certificate name does not match the configured URL. Use a URL covered by the certificate, or set `CRAFTY_TLS_SERVERNAME` together with a pinned `CRAFTY_CA_CERT_FILE`. No Minecraft action was taken.';
+  }
+  return base('Request failed', `🔴 ${safeErrorText(detail, 1500)}`, 'Control request result').setColor(colors.bad);
 }
