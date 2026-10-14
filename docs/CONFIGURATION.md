@@ -20,10 +20,10 @@ still be filled from that file.
 | `SERVICE_CONTROL_MODE` | No | `opt-out` (default), or `opt-in` for approval-before-controls. |
 | `HOMELAB_CONTROL_REPOSITORY` | No | Public GitHub `owner/repository` (or HTTPS GitHub URL) used for read-only bot release checks. |
 | `HOMELAB_CONTROL_VERSION` | No | Installed bot release, used for safe version comparison. |
-| `HOMELAB_CONTROL_RELEASE_CHANNEL` | No | `stable` (default) or `beta`; beta includes stable releases and GitHub pre-releases. Automatic beta updates still require an explicit administrator acknowledgement in `/settings`. |
+| `HOMELAB_CONTROL_RELEASE_CHANNEL` | No | `stable` (default) or `beta`; beta includes stable releases and GitHub pre-releases. Confirm the Beta live-patch route in `/settings` to enable its required daily automatic updates. |
 | `HOMELAB_CONTROL_RELEASE_ASSET` | No | Exact archive filename when a release contains more than one archive. |
 | `HOMELAB_CONTROL_RELEASE_POLICY_URL` | No | Optional HTTPS raw GitHub URL for the approved golden and last-major rollback targets. |
-| `HOMELAB_CONTROL_AUTO_UPDATE_MODE` | No | `off` (default), `hotfix`, `daily` or `weekly`; enabled modes check and install verified releases, with weekly stable releases weekly and compact hotfixes daily. Schedules are opt-in from `/settings`, and beta schedules are additionally locked behind the live-patch acknowledgement. |
+| `HOMELAB_CONTROL_AUTO_UPDATE_MODE` | No | Stable: `off` (default), `hotfix`, `daily` or `weekly`; enabled modes check and install verified releases, with weekly stable releases weekly and compact hotfixes daily. A confirmed Beta route uses daily automatic updates. |
 | `HOMELAB_CONTROL_AUTO_UPDATE_HOUR` | No | Local hour (0–23, default 4) used by an enabled schedule. |
 | `MEDIA_REQUIRED_PROVIDERS` | No | Explicit media contract, e.g. `jellyfin,seerr,sonarr`. |
 | `MEDIA_STACK_PROFILE` | No | `auto`, `full`, `minimal`, or `none`. |

@@ -4,6 +4,12 @@ Homelab Control is a private, read-first Discord control panel for Docker and
 Runtipi homelabs. It is a generic product: the bot name, server name, guilds,
 roles and integrations are configuration, not assumptions in the code.
 
+Version 0.5.0 rewrites the Discord bot in **Python with discord.py**. Its modules
+separate access rules, configuration, API clients, panels, interactions,
+scheduling and restart recovery. The host agent and maintenance bridge retain
+their existing API so an installed v0.4.1 controller can upgrade through OTA.
+See [the migration notes](docs/MIGRATING-0.5.md) for compatibility and test scope.
+
 This repository is intentionally conservative. The stable channel is
 strongest on the combinations that are easiest to verify: Crafty plus a
 Jellyfin/Seerr/Sonarr/Radarr/Prowlarr/qBittorrent media stack, and ordinary
@@ -142,8 +148,8 @@ is the complete path from a fresh homelab to a tested public release:
    installing hotfixes daily. The beta channel includes both stable releases and
    pre-releases, but its automatic route is locked until an administrator
    explicitly acknowledges the **beta live-patch route** in `/settings →
-   Updates`. Selecting beta never silently enables unattended updates; revoking
-   that acknowledgement turns the schedule off again. The scheduler records a
+   Updates`. Confirming the Beta route enables required daily automatic updates;
+   choose Stable to return to manual or optional scheduled updates. The scheduler records a
    pending job and reports completion after the replacement containers answer
    health checks. For a scheduled bot OTA, that completion is attached as one
    compact extra embed to the first successful slash-command response after
@@ -155,7 +161,7 @@ is the complete path from a fresh homelab to a tested public release:
    enables any bot release action; if an older worker still owns the shared
    directory, the release controls stay unavailable until the current bridge
    is installed, instead of sending a request the old worker cannot validate.
-7. **Publish only what was tested.** Run the offline Python and Node test
+7. **Publish only what was tested.** Run the Python bot, agent and maintenance test
    suites, review the support matrix, inspect the staged file list and perform
    a secret scan. Commit to the intended repository, create a version tag such
    as `v0.4.0` (or compact hotfix `v0.4.0a`), and let
@@ -314,9 +320,11 @@ From the repository root:
 ```sh
 python3 -m unittest discover -s agent -p 'test_*.py' -v
 python3 -m unittest discover -s maintenance -p 'test_*.py' -v
-cd bot && CONTROL_TOKEN=0123456789abcdef0123456789abcdef \
-  DISCORD_TOKEN=test-token DISCORD_CLIENT_ID=123456789012345678 \
-  DISCORD_GUILD_ID=123456789012345678 DISCORD_OWNER_ID=123456789012345678 npm test
+python3 -m venv .venv
+.venv/bin/pip install -r bot/requirements.txt
+.venv/bin/python -m unittest discover -s bot/tests -v
+python3 scripts/validate-release.py
+python3 scripts/validate-runtipi-app.py
 ```
 
 The tests are offline and use mocked Docker/panel responses. They do not need

@@ -13,183 +13,85 @@ jobs:
   validate-release:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out the tagged source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: bot/package-lock.json
-
-      - name: Install bot dependencies
-        working-directory: bot
-        run: npm ci --ignore-scripts
-
-      - name: Run release regression tests
-        shell: bash
-        env:
-          CONTROL_TOKEN: '0123456789abcdef0123456789abcdef'
-          DISCORD_TOKEN: 'test-token'
-          DISCORD_CLIENT_ID: '123456789012345678'
-          DISCORD_GUILD_ID: '123456789012345678'
-          DISCORD_OWNER_ID: '123456789012345678'
+      - run: pip install -r bot/requirements.txt ruff==0.17.0 pip-audit==2.10.1
+      - name: Validate release and compatibility
         run: |
           set -euo pipefail
+          python scripts/validate-release.py "${GITHUB_REF_NAME#v}"
+          python scripts/validate-runtipi-app.py
+          ruff check bot/homelab_bot bot/tests bot/legacy_healthcheck.py
+          python -m unittest discover -s bot/tests -v
           python -m unittest discover -s agent -p 'test_*.py' -v
           python -m unittest discover -s maintenance -p 'test_*.py' -v
-          python -m py_compile agent/agent.py maintenance/homelab-control-maintenance-worker.py
-          python3 scripts/validate-runtipi-app.py
-          for file in bot/src/*.js; do node --check "$file"; done
-          (cd bot && npm test)
-
-      - name: Validate Compose definitions
-        shell: bash
-        run: |
-          set -euo pipefail
+          pip-audit -r bot/requirements.txt
           cp config.example.env config.env
-          docker compose --env-file config.env -f compose.local.yml config >/dev/null
-          CONTROL_TOKEN=0123456789abcdef0123456789abcdef \
-          DISCORD_TOKEN=test-token \
-          DISCORD_CLIENT_ID=123456789012345678 \
-          DISCORD_GUILD_ID=123456789012345678 \
-          DISCORD_OWNER_ID=123456789012345678 \
-          APP_DATA_DIR=/tmp/homelab-control-release-data \
-          docker compose -f app/docker-compose.yml config >/dev/null
-
-      - name: Validate release identity
-        shell: bash
-        run: |
-          set -euo pipefail
-          export RELEASE_VERSION="${GITHUB_REF_NAME#v}"
-          python3 - <<'PY'
-          import json
-          import os
-          import re
-          from pathlib import Path
-
-          version = os.environ["RELEASE_VERSION"]
-          if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:[a-z]|-[0-9A-Za-z.-]+)?", version, re.IGNORECASE):
-              raise SystemExit(f"Tag v{version} is not a supported release version")
-
-          package_lock = json.loads(Path("bot/package-lock.json").read_text())
-          json_versions = {
-              "app/config.json": json.loads(Path("app/config.json").read_text())["version"],
-              "bot/package.json": json.loads(Path("bot/package.json").read_text())["version"],
-              "bot/package-lock.json": package_lock["version"],
-              "bot/package-lock.json packages root": package_lock["packages"][""]["version"],
-          }
-          mismatches = {path: value for path, value in json_versions.items() if value != version}
-          if mismatches:
-              details = ", ".join(f"{path}={value!r}" for path, value in mismatches.items())
-              raise SystemExit(f"Release v{version} does not match versioned metadata: {details}")
-
-          text_checks = {
-              "agent/agent.py": (Path("agent/agent.py").read_text(), f'os.getenv("HOMELAB_CONTROL_VERSION", "{version}").strip() or "{version}"'),
-              "config.example.env": (Path("config.example.env").read_text(), f"HOMELAB_CONTROL_VERSION={version}"),
-              # Build the Compose literal in pieces so GitHub Actions does not
-              # mistake it for its own expression syntax.
-              "compose.local.yml": (Path("compose.local.yml").read_text(), f"HOMELAB_CONTROL_VERSION: " + "$" + "{HOMELAB_CONTROL_VERSION:-" + version + "}"),
-              "app/docker-compose.yml": (Path("app/docker-compose.yml").read_text(), f"HOMELAB_CONTROL_VERSION: " + "$" + "{HOMELAB_CONTROL_VERSION:-" + version + "}"),
-          }
-          for path, (contents, expected) in text_checks.items():
-              if expected not in contents:
-                  raise SystemExit(f"Release v{version} is missing its version default in {path}")
-
-          changelog = Path("CHANGELOG.md").read_text()
-          if not re.search(rf"^## {re.escape(version)}(?:\s|$)", changelog, re.MULTILINE):
-              raise SystemExit(f"CHANGELOG.md has no section for {version}")
-          print(f"Release metadata is consistent for v{version}")
-          PY
-
-  source-release:
-    needs: validate-release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out the tagged source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Build the source archive
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          archive="homelab-control-${version}.tar.gz"
-          git archive --format=tar.gz --prefix="homelab-control-${version}/" "${GITHUB_REF_NAME}" > "${archive}"
-          sha256sum "${archive}" > SHA256SUMS
-
-      - name: Prepare the release changelog
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          awk -v version="${version}" '
-            $0 ~ "^## " version "([[:space:]]|$)" { found=1; next }
-            found && /^## / { exit }
-            found { print }
-          ' CHANGELOG.md | sed -e '1{/^$/d;}' > RELEASE_NOTES.md
-          if [ ! -s RELEASE_NOTES.md ]; then
-            printf 'Release %s. See the repository changelog for details.\n' "${version}" > RELEASE_NOTES.md
-          fi
-
-      - name: Publish the GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          release_flags=()
-          case "${GITHUB_REF_NAME#v}" in
-            *-*) release_flags+=(--prerelease) ;;
-          esac
-          gh release create "${GITHUB_REF_NAME}" "homelab-control-${GITHUB_REF_NAME#v}.tar.gz" SHA256SUMS "${release_flags[@]}" \
-            --title "Homelab Control ${GITHUB_REF_NAME#v}" \
-            --notes-file RELEASE_NOTES.md
+          docker compose --env-file config.env -f compose.local.yml config --quiet
 
   container-images:
     needs: validate-release
     runs-on: ubuntu-latest
     steps:
-      - name: Check out the tagged source
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-
-      - name: Derive the image version
+      - name: Derive image version
         id: version
-        shell: bash
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Build and publish the agent image
+      - name: Build bot and check the installed runtime
+        run: |
+          docker build -t homelab-control-bot:smoke bot
+          docker run --rm --entrypoint python homelab-control-bot:smoke -c 'from homelab_bot.main import HomelabBot; import discord; print(discord.__version__)'
+      - name: Publish agent
         uses: docker/build-push-action@v6
         with:
           context: ./agent
           platforms: linux/amd64
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/dc-homelab-control-agent:${{ steps.version.outputs.version }}
-
-      - name: Build and publish the bot image
+      - name: Publish bot
         uses: docker/build-push-action@v6
         with:
           context: ./bot
           platforms: linux/amd64
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/dc-homelab-control-bot:${{ steps.version.outputs.version }}
+
+  source-release:
+    needs: [validate-release, container-images]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Package the OTA archive
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          archive="homelab-control-${version}.tar.gz"
+          git archive --format=tar.gz --prefix="homelab-control-${version}/" "$GITHUB_REF_NAME" > "$archive"
+          sha256sum "$archive" > SHA256SUMS
+          awk -v version="$version" '
+            $0 ~ "^## " version "([[:space:]]|$)" { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          test -s RELEASE_NOTES.md
+      - name: Publish the OTA release after images succeed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          flags=()
+          case "${GITHUB_REF_NAME#v}" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" "homelab-control-${GITHUB_REF_NAME#v}.tar.gz" SHA256SUMS "${flags[@]}" \
+            --verify-tag --title "Homelab Control ${GITHUB_REF_NAME#v}" --notes-file RELEASE_NOTES.md

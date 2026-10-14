@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0
+
+1. Rewrite the Discord bot in Python with discord.py, separating configuration, access, API clients, panels, interactions, scheduling and restart recovery into focused modules.
+2. Redesign status and detail panels with compact summaries, consistent resource meters, paginated container/server lists and quieter background refreshes.
+3. Preserve existing configuration, access overrides, wake favourites and restart handoffs across the runtime migration. Guests retain read-only inspection; mutations recheck administrator permissions at execution.
+4. Keep verified GitHub OTA installation and rollback compatible with the v0.4.1 host bridge, including its archive layout and Docker health probes. Release publication now waits for both container images to succeed.
+5. Preserve inline release notes, adaptive download sizes, owner-approved rollback policy, host/container OS distinction and compact weekly health reports.
+6. Confirm the Beta live-patch route before enabling required daily automatic updates. Stable installations retain their chosen manual or scheduled update policy.
+
+Validation uses offline Discord interaction fixtures, local mock HTTP panels,
+the previous release's archive validator and Linux container build/import checks.
+The rewrite has not been exercised with a live Discord gateway or installed on
+the reference server as part of this release. Crafty and the existing Jellyfin
+stack remain the primary integration targets; testers are welcome.
+
 ## 0.4.1 - 2026-09-16
 
 1. Made the GitHub release source tolerant of either `owner/repository` or an

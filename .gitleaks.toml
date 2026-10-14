@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Exact public example values used by CI and onboarding"
+regexTarget = "secret"
+regexes = [
+  '''^123456789012345678$''',
+  '''^replace-with-your-application-id$''',
+]

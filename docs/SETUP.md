@@ -114,8 +114,8 @@ stable releases and hotfixes daily, and `weekly` checks and installs stable
 releases weekly while checking and installing hotfixes daily. The beta channel
 includes both stable releases and pre-releases, but automatic beta updates are
 locked until the administrator acknowledges the **beta live-patch route** shown
-in Settings → Updates. Selecting beta alone never enables unattended updates;
-revoking the acknowledgement turns the schedule off. The bot records the
+in Settings → Updates. Confirming that route enables required daily automatic
+updates. Choose Stable to return to manual or optional scheduled updates. The bot records the
 accepted job and reports completion after the replacement containers answer
 both health checks. Scheduled bot OTA completion is a one-shot compact extra
 embed on the first successful slash-command response after restart; it does

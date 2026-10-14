@@ -7,8 +7,10 @@
       published or listed until a real arm64 runtime has been tested.
 - [ ] Make the GHCR agent and bot packages public before sharing the Runtipi
       app definition.
-- [ ] Run Python unit tests, Node tests, JavaScript syntax checks and
-      JSON/YAML validation.
+- [ ] Run Python bot, agent and maintenance tests, code checks, dependency
+      vulnerability checks, Linux container builds and release-identity validation.
+- [ ] Verify the v0.4.1 archive validator accepts the Python source archive
+      and the legacy Compose healthcheck works in the new image.
 - [ ] Install once as a disposable custom Runtipi app and verify onboarding
       with no optional providers.
 - [ ] Verify a Jellyfin/Seerr/Arr stack reports missing components accurately,

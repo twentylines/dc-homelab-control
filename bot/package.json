@@ -1,18 +1,7 @@
 {
   "name": "homelab-control-bot",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "private": true,
   "license": "AGPL-3.0-or-later",
-  "type": "module",
-  "description": "Universal Discord control panel for Docker homelabs",
-  "scripts": {
-    "start": "node src/index.js",
-    "test": "node --test"
-  },
-  "engines": {
-    "node": ">=22"
-  },
-  "dependencies": {
-    "discord.js": "14.27.0"
-  }
+  "description": "Legacy OTA archive marker; the bot runs Python via homelab_bot.main"
 }

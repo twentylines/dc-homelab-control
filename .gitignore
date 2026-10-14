@@ -6,3 +6,5 @@ bot/node_modules/
 config.env
 data/
 *.log
+.venv/
+.ruff_cache/

@@ -21,8 +21,8 @@ services:
       AGENT_DATA_DIR: /data
       MAINTENANCE_DIR: /host/maintenance
       HOST_UPDATE_NOTIFIER_DIR: /host/update-notifier
-      HOMELAB_CONTROL_REPOSITORY: ${HOMELAB_CONTROL_REPOSITORY:-}
-      HOMELAB_CONTROL_VERSION: ${HOMELAB_CONTROL_VERSION:-0.4.1}
+      HOMELAB_CONTROL_REPOSITORY: ${HOMELAB_CONTROL_REPOSITORY:-twentylines/dc-homelab-control}
+      HOMELAB_CONTROL_VERSION: ${HOMELAB_CONTROL_VERSION:-0.5.0}
       HOMELAB_CONTROL_RELEASE_CHANNEL: ${HOMELAB_CONTROL_RELEASE_CHANNEL:-stable}
       HOMELAB_CONTROL_RELEASE_ASSET: ${HOMELAB_CONTROL_RELEASE_ASSET:-}
       HOMELAB_CONTROL_RELEASE_POLICY_URL: ${HOMELAB_CONTROL_RELEASE_POLICY_URL:-}
@@ -75,7 +75,7 @@ services:
     labels:
       homelab.control.component: agent
       homelab.control.managed: "true"
-      homelab.control.release: ${HOMELAB_CONTROL_VERSION:-0.4.1}
+      homelab.control.release: ${HOMELAB_CONTROL_VERSION:-0.5.0}
 
   bot:
     build:
@@ -116,8 +116,8 @@ services:
       WAKE_DEFAULT_MAC: ${WAKE_DEFAULT_MAC:-}
       WAKE_BROADCAST: ${WAKE_BROADCAST:-255.255.255.255}
       HOMELAB_CONTROL_AGENT_URL: http://agent:8787
-      HOMELAB_CONTROL_VERSION: ${HOMELAB_CONTROL_VERSION:-0.4.1}
-      HOMELAB_CONTROL_REPOSITORY: ${HOMELAB_CONTROL_REPOSITORY:-}
+      HOMELAB_CONTROL_VERSION: ${HOMELAB_CONTROL_VERSION:-0.5.0}
+      HOMELAB_CONTROL_REPOSITORY: ${HOMELAB_CONTROL_REPOSITORY:-twentylines/dc-homelab-control}
       HOMELAB_CONTROL_RELEASE_CHANNEL: ${HOMELAB_CONTROL_RELEASE_CHANNEL:-stable}
       HOMELAB_CONTROL_RELEASE_ASSET: ${HOMELAB_CONTROL_RELEASE_ASSET:-}
       HOMELAB_CONTROL_AUTO_UPDATE_MODE: ${HOMELAB_CONTROL_AUTO_UPDATE_MODE:-off}
@@ -149,7 +149,7 @@ services:
     labels:
       homelab.control.component: bot
       homelab.control.managed: "true"
-      homelab.control.release: ${HOMELAB_CONTROL_VERSION:-0.4.1}
+      homelab.control.release: ${HOMELAB_CONTROL_VERSION:-0.5.0}
 
 networks:
   homelab-control:

@@ -11,46 +11,39 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: bot/package-lock.json
-      - name: Run agent tests
-        run: python -m unittest discover -s agent -p 'test_*.py' -v
-      - name: Run maintenance bridge tests
-        run: python -m unittest discover -s maintenance -p 'test_*.py' -v
-      - name: Install bot dependencies
-        working-directory: bot
-        run: npm ci --ignore-scripts
-      - name: Run bot tests
-        working-directory: bot
-        env:
-          CONTROL_TOKEN: '0123456789abcdef0123456789abcdef'
-          DISCORD_TOKEN: 'test-token'
-          # Keep Discord IDs as strings; unquoted numeric-looking YAML values
-          # can be rendered as scientific notation by GitHub Actions.
-          DISCORD_CLIENT_ID: '123456789012345678'
-          DISCORD_GUILD_ID: '123456789012345678'
-          DISCORD_OWNER_ID: '123456789012345678'
-        run: npm test
-      - name: Validate source syntax and configuration
-        shell: bash
+          cache: pip
+          cache-dependency-path: bot/requirements.txt
+      - name: Install runtime and review tools
+        run: pip install -r bot/requirements.txt ruff==0.17.0 pip-audit==2.10.1
+      - name: Check Python and release contracts
         run: |
           set -euo pipefail
-          python -m py_compile agent/agent.py maintenance/homelab-control-maintenance-worker.py
+          ruff check bot/homelab_bot bot/tests bot/legacy_healthcheck.py
+          python -m unittest discover -s bot/tests -v
+          python -m unittest discover -s agent -p 'test_*.py' -v
+          python -m unittest discover -s maintenance -p 'test_*.py' -v
+          python scripts/validate-release.py
+          python scripts/validate-runtipi-app.py
+          pip-audit -r bot/requirements.txt
           sh -n scripts/install-compose.sh install-staged-app.sh
-          python3 scripts/validate-runtipi-app.py
-          node --check bot/src/agent.js
-          for file in bot/src/*.js; do node --check "$file"; done
-          python -m json.tool app/config.json >/dev/null
-          cp config.example.env config.env
-          docker compose --env-file config.env -f compose.local.yml config >/dev/null
           git diff --check
+      - name: Validate Compose definitions
+        run: |
+          cp config.example.env config.env
+          docker compose --env-file config.env -f compose.local.yml config --quiet
+          CONTROL_TOKEN=test-controller-token-00000000000000000000 \
+          DISCORD_TOKEN=test-token DISCORD_CLIENT_ID=123456789012345678 \
+          DISCORD_GUILD_ID=123456789012345678 DISCORD_OWNER_ID=123456789012345678 \
+          APP_DATA_DIR=/tmp/homelab-control-data \
+          docker compose -f app/docker-compose.yml config --quiet
+      - name: Build and smoke test the Python bot image
+        run: |
+          docker build -t homelab-control-bot:test bot
+          docker run --rm --entrypoint python homelab-control-bot:test -c 'from homelab_bot.main import HomelabBot; import discord; print(discord.__version__)'
+          docker build -t homelab-control-agent:test agent
