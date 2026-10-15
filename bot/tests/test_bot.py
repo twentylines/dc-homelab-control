@@ -19,6 +19,7 @@ import discord
 from aiohttp import web
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from homelab_bot import __version__
 from homelab_bot.api import Agent, safe_error
 from homelab_bot.config import Config, load_env
 from homelab_bot.controller import Controller
@@ -251,6 +252,51 @@ class FixtureCase(unittest.IsolatedAsyncioTestCase):
 
 
 class BotTests(FixtureCase):
+    async def test_home_uses_direct_buttons_and_each_opens_its_panel(self):
+        panel = await self.controller.payload("panel", interaction())
+        view = self.assert_panel(panel)
+        self.assertEqual(
+            [control.value for control in panel.controls],
+            [
+                "panel",
+                "status",
+                "services",
+                "minecraft",
+                "storage",
+                "media",
+                "tasks",
+                "network",
+                "updates",
+                "settings",
+            ],
+        )
+        self.assertTrue(all(isinstance(item, discord.ui.Button) for item in view.children))
+        self.assertEqual([len(row["components"]) for row in view.to_components()], [5, 5])
+        for item, definition in zip(view.children, panel.controls):
+            with self.subTest(section=definition.value):
+                request = interaction()
+                await item.callback(request)
+                response = request.edit_original_response.call_args.kwargs
+                self.assertNotIn("Request needs attention", response["embeds"][0].title)
+                self.assertNotEqual(response["embeds"][0].title, "Request failed")
+        self.agent.post.assert_not_awaited()
+        self.agent.action.assert_not_awaited()
+        self.mc.action.assert_not_awaited()
+
+    async def test_home_hides_unavailable_sections_and_guest_settings(self):
+        self.agent.values["media"] = []
+        self.cfg.values["MINECRAFT_BACKEND"] = "none"
+        for user in (OWNER, GUEST):
+            with self.subTest(user=user):
+                panel = await self.controller.payload("panel", interaction(user))
+                self.assert_panel(panel)
+                sections = {control.value for control in panel.controls}
+                self.assertNotIn("media", sections)
+                self.assertNotIn("minecraft", sections)
+                self.assertEqual("settings" in sections, user == OWNER)
+                self.assertIn("updates", sections)
+                self.assertIn("services", sections)
+
     async def test_all_reader_commands_and_settings_payloads(self):
         bot = HomelabBot(self.cfg)
         self.assertEqual(
@@ -684,7 +730,7 @@ class PureTests(unittest.TestCase):
                     "bot/requirements.txt",
                     "bot/homelab_bot/__init__.py",
                 ):
-                    tar.add(ROOT / relative, arcname="homelab-control-0.5.0/" + relative)
+                    tar.add(ROOT / relative, arcname=f"homelab-control-{__version__}/" + relative)
             extracted = module.safe_extract_release(archive, directory / "extracted")
             self.assertTrue((extracted / "bot/requirements.txt").is_file())
 

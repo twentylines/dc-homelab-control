@@ -107,14 +107,18 @@ class Controller:
                 panel.embeds.append(detail)
                 panel.controls = navigation("report")
             if page == "panel":
-                # Optional sections are offered only when a provider or backend exists.
-                choices = panel.controls[-1].options
+                hidden = set()
                 if not media:
-                    choices[:] = [v for v in choices if v[1] != "media"]
+                    hidden.add("media")
                 if self.cfg.get("MINECRAFT_BACKEND", "auto") == "none":
-                    choices[:] = [v for v in choices if v[1] != "minecraft"]
+                    hidden.add("minecraft")
                 if not admin:
-                    choices[:] = [v for v in choices if v[1] != "settings"]
+                    hidden.add("settings")
+                panel.controls = [
+                    control
+                    for control in panel.controls
+                    if control.key != "page" or control.value not in hidden
+                ]
             return panel
         if page == "storage":
             return self.ui.storage(await self.agent.get("status"))

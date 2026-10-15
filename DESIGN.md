@@ -14,6 +14,8 @@ ENERGY 1 / RHYTHM 2 / MOTION 1. Motion is limited to a real in-flight refresh or
 - The footer contains one useful command hint and Discord's timestamp.
 - Lists are paginated before Discord's field or selection limits are reached.
 - Deeper panels include their parent and Home to avoid repeated backtracking.
+- Home exposes each available section as a native button for direct access,
+  matching the owner's preferred navigation; only long item lists use selectors.
 - A refresh retains the complete previous sample and changes its footer only.
 
 Discord owns visual rendering, contrast, touch target sizes and theme behaviour.

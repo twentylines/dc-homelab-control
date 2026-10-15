@@ -161,16 +161,10 @@ def navigation(page="panel", parent=None):
     if page != "panel":
         result.append(Control("Back to home", "page", "panel"))
     if page == "panel":
-        result.append(
-            Control(
-                "Open a section",
-                "page",
-                options=[
-                    (label, key, "")
-                    for key, label in PAGES.items()
-                    if key not in {"panel", "controls", "health", "report", "audit", "help", "ping"}
-                ],
-            )
+        result.extend(
+            Control(label, "page", key)
+            for key, label in PAGES.items()
+            if key not in {"panel", "controls", "health", "report", "audit", "help", "ping"}
         )
     return result
 

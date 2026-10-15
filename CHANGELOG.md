@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1
+
+1. Restore direct Home section navigation, preserving provider detection, read-only guest access and administrator-only settings.
+2. Set v0.5.1 as the owner-approved rollback baseline without changing verified OTA installation, retained-image rollback or automatic-update preferences.
+3. Add regression coverage for every Home destination, optional-section visibility, guest permissions and Discord component limits.
+
 ## 0.5.0
 
 1. Rewrite the Discord bot in Python with discord.py, separating configuration, access, API clients, panels, interactions, scheduling and restart recovery into focused modules.

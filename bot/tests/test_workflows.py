@@ -10,6 +10,7 @@ import aiohttp
 from aiohttp import web
 from test_bot import OWNER, ROOT, FixtureCase, config, interaction
 
+from homelab_bot import __version__
 from homelab_bot.main import HomelabBot
 from homelab_bot.minecraft import Minecraft
 from homelab_bot.scheduler import Scheduler
@@ -135,7 +136,7 @@ class Runtime(unittest.IsolatedAsyncioTestCase):
                 async with aiohttp.ClientSession() as session:
                     async with session.get("http://127.0.0.1:30199/healthz") as response:
                         self.assertEqual(response.status, 503)
-                        self.assertEqual((await response.json())["version"], "0.5.0")
+                        self.assertEqual((await response.json())["version"], __version__)
                     with patch.object(bot, "is_ready", return_value=True):
                         async with session.get("http://127.0.0.1:30199/healthz") as response:
                             self.assertEqual(response.status, 200)
